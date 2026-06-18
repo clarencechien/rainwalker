@@ -1,0 +1,18 @@
+name = "rainwalker"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# 靜態 UI（index.html 等）
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# 每 10 分鐘抓一次
+[triggers]
+crons = ["*/10 * * * *"]
+
+# R2：存算好的 data.json
+# ⚠️ bucket_name 必須等於你在 R2 後台建的 bucket 名稱（沒有就建一個叫 rainwalker）
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "rainwalker"
