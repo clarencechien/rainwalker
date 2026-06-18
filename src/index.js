@@ -130,6 +130,46 @@ export default {
       } catch (e) { return json({ ds, api, error: String(e) }, 500); }
     }
 
+    // 除錯：計時 QPF parse + 取三點/雙北子網格（決定免費接得動否）
+    if (url.pathname === "/qpfparse") {
+      const key = (env.CWA_KEY || "").trim();
+      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
+      try {
+        const t0 = Date.now();
+        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
+        const t1 = Date.now();                       // fetch+parse JSON 物件
+        const info = raw.cwaopendata.dataset.datasetInfo.parameterSet;
+        const lon0 = +info.StartPointLongitude, lat0 = +info.StartPointLatitude;
+        const res = +info.GridResolution, nx = +info.GridDimensionX, ny = +info.GridDimensionY;
+        // 取出逗號分隔的格點數值陣列
+        let body = raw.cwaopendata.dataset.contents.content;
+        if (typeof body !== "string") body = body && (body["#text"] || body._ || JSON.stringify(body));
+        const t2 = Date.now();
+        const vals = body.split(",");                // 24.7 萬個字串
+        const t3 = Date.now();
+        const idx = (lat, lng) => {
+          const ix = Math.round((lng - lon0) / res), iy = Math.round((lat - lat0) / res);
+          if (ix < 0 || iy < 0 || ix >= nx || iy >= ny) return null;
+          return iy * nx + ix;                       // row-major（待驗證方向）
+        };
+        const PTS = CONFIG.points.map(p => {
+          const i = idx(p.lat, p.lng);
+          return { id: p.id, area: p.area, gi: i, qpf_mm: i != null ? +vals[i] : null };
+        });
+        // 雙北子網格範圍（只數格數，不展開）
+        const bx0 = Math.floor((121.3 - lon0) / res), bx1 = Math.ceil((122.0 - lon0) / res);
+        const by0 = Math.floor((24.6 - lat0) / res), by1 = Math.ceil((25.3 - lat0) / res);
+        const t4 = Date.now();
+        return json({
+          grid: { lon0, lat0, res, nx, ny, total: nx * ny, datetime: info.DateTime },
+          timing_ms: { fetch_parse_json: t1 - t0, get_body: t2 - t1, split: t3 - t2, lookup: t4 - t3, total: t4 - t0 },
+          values_len: vals.length,
+          points: PTS,
+          shuangbei_box: { x: [bx0, bx1], y: [by0, by1], cols: bx1 - bx0 + 1, rows: by1 - by0 + 1, cells: (bx1 - bx0 + 1) * (by1 - by0 + 1) }
+        });
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
