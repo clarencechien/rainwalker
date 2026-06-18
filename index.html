@@ -122,7 +122,8 @@
 /* 部署後把這行改成你的 Worker 網址（含 CORS），例如：
    const DATA_URL = "https://rain-on-route.你的子網域.workers.dev/";
    本機預覽或還沒部署就留 "data.json"，會 fallback 到內嵌示範資料。 */
-const DATA_URL = "rainwalker.sw-tech.workers.dev";
+const DATA_URL = "data.json";
+function nowStr(){return new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false});}
 
 /* data.json 契約：
    points[].mm_hr（mm/hr，非 boolean）
@@ -272,9 +273,10 @@ function pick(i){ sel=i; renderTabs(DATA); renderCard(DATA); }
 
 function render(d){
   DATA=d;
-  document.getElementById("clock").textContent=(d.updated_local||"").split(" ")[1]||"—";
+  document.getElementById("clock").textContent=nowStr();
   const age=d.source_age_min, f=document.getElementById("fresh");
-  f.textContent=`資料 ${age} 分前更新`; f.className="fresh"+(age>=10?" stale":"");
+  const dt=(d.updated_local||"").split(" ")[1]||"";
+  f.textContent=`資料 ${dt} 更新 · ${age} 分前`; f.className="fresh"+(age>=10?" stale":"");
   document.getElementById("mode").textContent=d.mode==="shadow"?"SHADOW":"LIVE";
   // 預設依時段選路徑：早上挑第一個「上班」，其餘挑第一個「下班」
   const h=new Date().getHours();
@@ -301,6 +303,7 @@ function render(d){
 if("serviceWorker" in navigator){
   window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
 }
+setInterval(()=>{const el=document.getElementById("clock");if(el)el.textContent=nowStr();},30000);
 </script>
 </body>
 </html>
