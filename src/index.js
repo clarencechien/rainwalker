@@ -223,6 +223,56 @@ export default {
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
+    // 除錯：反查正確維度對應（讓有效格落在台灣本島）
+    if (url.pathname === "/qpffix") {
+      const key = (env.CWA_KEY || "").trim();
+      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
+      try {
+        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
+        const info = raw.cwaopendata.dataset.datasetInfo.parameterSet;
+        const lon0 = +info.StartPointLongitude, lat0 = +info.StartPointLatitude, res = +info.GridResolution;
+        const NX = +info.GridDimensionX, NY = +info.GridDimensionY;
+        let body = raw.cwaopendata.dataset.contents.content;
+        if (typeof body !== "string") body = body["#text"] || body._ || "";
+        const vals = body.split(",").map(Number);
+        // 把有效格的「線性 index」換算成經緯度，4 種假設，挑出落在台灣本島比例最高者
+        const island = (lo, la) => lo >= 119.5 && lo <= 122.2 && la >= 21.7 && la <= 25.4;
+        const models = {
+          // w=每列寬度, lonFast=經度是否為快變維
+          A_lonFast_W_NX: { w: NX, lonFast: true },   // k=iy*NX+ix, ix=經
+          B_lonFast_W_NY: { w: NY, lonFast: true },
+          C_latFast_W_NX: { w: NX, lonFast: false },  // k=ix*?+... 緯快變
+          D_latFast_W_NY: { w: NY, lonFast: false }
+        };
+        const score = {};
+        for (const name in models) {
+          const { w, lonFast } = models[name];
+          let hit = 0, tot = 0;
+          for (let k = 0; k < vals.length; k++) {
+            if (vals[k] <= -98) continue; tot++;
+            const a = k % w, b = Math.floor(k / w);   // a=沿列, b=列號
+            let lon, lat;
+            if (lonFast) { lon = lon0 + a * res; lat = lat0 + ((NY - 1) - b) * res; }
+            else { lat = lat0 + ((NY - 1) - a) * res; lon = lon0 + b * res; }
+            if (island(lon, lat)) hit++;
+          }
+          score[name] = { valid: tot, on_island: hit, ratio: tot ? +(hit / tot).toFixed(3) : 0 };
+        }
+        // 用得分最高的模型取 A/B/C
+        const best = Object.entries(score).sort((x, y) => y[1].on_island - x[1].on_island)[0][0];
+        const m = models[best];
+        const getv = (lat, lng) => {
+          const ix = Math.round((lng - lon0) / res), iyFromN = Math.round(((lat0 + (NY - 1) * res) - lat) / res);
+          let k;
+          if (m.lonFast) k = iyFromN * m.w + ix;
+          else { const iyN = Math.round(((lat0 + (NY - 1) * res) - lat) / res); k = ix * m.w + iyN; }
+          return { k, v: vals[k] };
+        };
+        const PTS = CONFIG.points.map(p => ({ id: p.id, area: p.area, ...getv(p.lat, p.lng) }));
+        return json({ NX, NY, lon0, lat0, res, best_model: best, score, points_using_best: PTS });
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
