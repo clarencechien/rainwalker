@@ -1,14 +1,61 @@
 {
-  "day_window": [6, 24],
+  "day_window": [
+    6,
+    24
+  ],
   "points": [
-    {"id":"A","name":"遠東世紀廣場","area":"中和","lat":24.9977,"lng":121.4855,"station":"TODO","township":"新北市中和區"},
-    {"id":"B","name":"頂溪站","area":"永和","lat":25.0138,"lng":121.5155,"station":"TODO","township":"新北市永和區"},
-    {"id":"C","name":"瑞光智慧社區","area":"內湖","lat":25.0732,"lng":121.5789,"station":"TODO","township":"臺北市內湖區"}
+    {
+      "id": "A",
+      "name": "遠東世紀廣場",
+      "area": "中和",
+      "lat": 24.9977,
+      "lng": 121.4855,
+      "station": "C0AG80",
+      "township": "新北市中和區"
+    },
+    {
+      "id": "B",
+      "name": "頂溪站",
+      "area": "永和",
+      "lat": 25.0138,
+      "lng": 121.5155,
+      "station": "C0AH10",
+      "township": "新北市永和區"
+    },
+    {
+      "id": "C",
+      "name": "瑞光智慧社區",
+      "area": "內湖",
+      "lat": 25.0732,
+      "lng": 121.5789,
+      "station": "C0A9F0",
+      "township": "臺北市內湖區"
+    }
   ],
   "paths": [
-    {"id":"B-A","from":"B","to":"A","tag":"上班"},
-    {"id":"B-C","from":"B","to":"C","tag":"上班"},
-    {"id":"A-B","from":"A","to":"B","tag":"下班"},
-    {"id":"C-B","from":"C","to":"B","tag":"下班"}
+    {
+      "id": "B-A",
+      "from": "B",
+      "to": "A",
+      "tag": "上班"
+    },
+    {
+      "id": "B-C",
+      "from": "B",
+      "to": "C",
+      "tag": "上班"
+    },
+    {
+      "id": "A-B",
+      "from": "A",
+      "to": "B",
+      "tag": "下班"
+    },
+    {
+      "id": "C-B",
+      "from": "C",
+      "to": "B",
+      "tag": "下班"
+    }
   ]
 }
