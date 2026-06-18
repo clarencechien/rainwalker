@@ -148,9 +148,9 @@ async function buildLive(env) {
 async function fetchForecast(key, dayWin) {
   const [w0, w1] = dayWin;
   const raw = await cwaFetch("F-D0047-089", key, { params: {
-    LocationName: "新北市,臺北市", ElementName: "3小時降雨機率,天氣現象"
+    ElementName: "3小時降雨機率,天氣現象"
   }});
-  const found = findLocations(raw, ["新北市", "臺北市"]);
+  const found = findLocations(raw, ["新北市", "臺北市", "台北市"]);
   const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
   const out = {};
   for (const name in found) {
@@ -182,8 +182,7 @@ function findLocations(node, want, out = {}) {
   if (!node || typeof node !== "object") return out;
   if (Array.isArray(node)) { node.forEach(n => findLocations(n, want, out)); return out; }
   if (node.LocationName && want.includes(node.LocationName) && node.WeatherElement) out[node.LocationName] = node;
-  if (node.Location) findLocations(node.Location, want, out);
-  if (node.Locations) findLocations(node.Locations, want, out);
+  for (const k in node) { const v = node[k]; if (v && typeof v === "object") findLocations(v, want, out); }
   return out;
 }
 function hourOf(iso) { const m = /T(\d{2}):/.exec(iso || ""); return m ? +m[1] : 0; }
