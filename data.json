@@ -1,0 +1,23 @@
+{
+  "updated_local": "2026-06-17 11:48",
+  "source_age_min": 2,
+  "mode": "shadow",
+  "day_window": [6, 24],
+  "points": [
+    {"id":"A","name":"遠東世紀廣場","area":"中和","mm_hr":0},
+    {"id":"B","name":"頂溪站","area":"永和","mm_hr":1.2},
+    {"id":"C","name":"瑞光智慧社區","area":"內湖","mm_hr":14}
+  ],
+  "paths": [
+    {"id":"B-A","from":"B","to":"A","tag":"上班","status":"clear",
+     "plan":{"state":"forecast","note":"預報 15–18 時有雨 · 實況尚早","blocks":[{"from":15,"to":18,"mm_hr":5,"pop":60}]}},
+    {"id":"B-C","from":"B","to":"C","tag":"上班","status":"rain_ahead",
+     "eta_min":18,"segment":"內湖段","peak_mm_hr":6,"window_min":[18,38],"confidence":"中",
+     "plan":{"state":"forming","note":"預報 12–15 時 · 實況成形中","blocks":[{"from":12,"to":15,"mm_hr":8,"pop":70}]}},
+    {"id":"A-B","from":"A","to":"B","tag":"下班","status":"clear",
+     "plan":{"state":"cleared","note":"今日無明顯降雨預報","blocks":[]}},
+    {"id":"C-B","from":"C","to":"B","tag":"下班","status":"raining_now",
+     "segment":"內科起點","peak_mm_hr":14,"window_min":[0,25],"confidence":"高",
+     "plan":{"state":"confirmed","note":"預報 12:00 · 實況提前 12 分（11:48 已下）","blocks":[{"from":12,"to":15,"mm_hr":12,"pop":80}]}}
+  ]
+}
