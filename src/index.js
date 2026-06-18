@@ -326,6 +326,45 @@ export default {
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
+    // 除錯：純網格座標分佈（不假設方向），反推真實原點/掃描
+    if (url.pathname === "/qpfgrid") {
+      const key = (env.CWA_KEY || "").trim();
+      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
+      try {
+        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
+        const inf = raw.cwaopendata.dataset.datasetInfo.parameterSet;
+        const NX = +inf.GridDimensionX, NY = +inf.GridDimensionY;
+        let body = raw.cwaopendata.dataset.contents.content;
+        if (typeof body !== "string") body = body["#text"] || body._ || "";
+        const vals = body.split(",").map(Number);
+        // 假設 k = iy*NX + ix（ix 快變，寬=NX=441）；統計有效格的 ix/iy 分佈
+        let ixMin = 1e9, ixMax = -1, iyMin = 1e9, iyMax = -1, n = 0;
+        const ixHist = {}, iyHist = {};        // 粗分箱（每 40 格一箱）
+        let sample = [];
+        for (let k = 0; k < vals.length; k++) {
+          if (vals[k] <= -98) continue; n++;
+          const ix = k % NX, iy = Math.floor(k / NX);
+          if (ix < ixMin) ixMin = ix; if (ix > ixMax) ixMax = ix;
+          if (iy < iyMin) iyMin = iy; if (iy > iyMax) iyMax = iy;
+          const bx = Math.floor(ix / 40) * 40, by = Math.floor(iy / 40) * 40;
+          ixHist[bx] = (ixHist[bx] || 0) + 1; iyHist[by] = (iyHist[by] || 0) + 1;
+          if (sample.length < 8 && vals[k] > 3) sample.push({ k, ix, iy, v: vals[k] });
+        }
+        // 同樣假設下，把有效格中心（取中位 ix/iy）換算成「若原點在四個角」各自的經緯度
+        const cix = Math.round((ixMin + ixMax) / 2), ciy = Math.round((iyMin + iyMax) / 2);
+        const res = +inf.GridResolution, L0 = +inf.StartPointLongitude, A0 = +inf.StartPointLatitude;
+        const corner = {
+          SW_lonByIx: [ +(L0 + cix * res).toFixed(2), +(A0 + ciy * res).toFixed(2) ],
+          NW_lonByIx: [ +(L0 + cix * res).toFixed(2), +(A0 + (NY - 1 - ciy) * res).toFixed(2) ],
+          SW_lonByIy: [ +(L0 + ciy * res).toFixed(2), +(A0 + cix * res).toFixed(2) ],
+          NW_lonByIy: [ +(L0 + ciy * res).toFixed(2), +(A0 + (NX - 1 - cix) * res).toFixed(2) ]
+        };
+        return json({ NX, NY, valid: n, ix_range: [ixMin, ixMax], iy_range: [iyMin, iyMax],
+          ix_center: cix, iy_center: ciy, ix_hist: ixHist, iy_hist: iyHist,
+          rain_samples: sample, center_as_corner: corner });
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
