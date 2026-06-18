@@ -60,14 +60,25 @@ export default {
       });
     }
 
-    // 除錯：探預報資料集結構（ds/loc 可帶 query 試不同編號）
+    // 除錯：探預報資料集結構（預設不過濾，挖第一鄉鎮 + PoP element）
     if (url.pathname === "/fc") {
-      const ds = url.searchParams.get("ds") || "F-D0047-091";
-      const loc = url.searchParams.get("loc") || "中和區";
+      const ds = url.searchParams.get("ds") || "F-D0047-089";
+      const loc = url.searchParams.get("loc");
       try {
-        const raw = await cwaFetch(ds, env.CWA_KEY, { params: { LocationName: loc } });
-        const recs = raw && raw.records || {};
-        return json({ ds, loc, keys: Object.keys(recs), preview: JSON.stringify(recs).slice(0, 2200) });
+        const params = loc ? { LocationName: loc } : {};
+        const raw = await cwaFetch(ds, env.CWA_KEY, { params });
+        const top = raw && raw.records && raw.records.Locations && raw.records.Locations[0] || {};
+        const locs = top.Location || [];
+        const first = locs[0] || null;
+        const els = first ? (first.WeatherElement || []) : [];
+        const pop = els.find(e => /降雨|機率|PoP|Probability/i.test(e.ElementName || "")) || els[0] || null;
+        const trim = e => { if (!e) return null; const c = { ...e }; if (c.Time) c.Time = c.Time.slice(0, 3); return c; };
+        return json({
+          ds, desc: top.DatasetDescription, count: locs.length,
+          names: locs.slice(0, 6).map(l => l.LocationName),
+          elementNames: els.map(e => e.ElementName),
+          popSample: trim(pop)
+        });
       } catch (e) { return json({ ds, error: String(e) }, 500); }
     }
 
