@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>路上有雨嗎</title>
+<meta name="theme-color" content="#0f1622">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="路上有雨">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root{
+    --bg:#0f1622; --bg2:#15202f; --card:#1a2535; --line:#2a3850;
+    --txt:#eef3f9; --muted:#8a98b6; --dim:#5a6a85;
+    --dry:#4fd1a5; --sky:#5aa9ff;
+    --i1:#7fa8c9; --i2:#5aa9ff; --i3:#f5c518; --i4:#f5821f; --i5:#ff4d4d;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC",sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{font-size:17px}
+  body{background:var(--bg);color:var(--txt);font-family:var(--sans);
+       -webkit-font-smoothing:antialiased;line-height:1.45;
+       -webkit-tap-highlight-color:transparent}
+  .wrap{max-width:480px;margin:0 auto;min-height:100vh;
+        padding:max(22px,env(safe-area-inset-top)) 20px calc(28px + env(safe-area-inset-bottom));
+        background:linear-gradient(180deg,#13202f 0%,var(--bg) 38%)}
+
+  .top{display:flex;align-items:center;justify-content:space-between}
+  .app{font-size:15px;color:var(--sky);letter-spacing:1px;font-weight:700}
+  .mode{font-family:var(--mono);font-size:11px;color:var(--dim);
+        border:1px solid var(--line);border-radius:4px;padding:3px 8px}
+  .clock{font-size:46px;font-weight:800;letter-spacing:.5px;margin-top:10px;line-height:1}
+  .fresh{font-family:var(--mono);font-size:13px;color:var(--muted);margin-top:6px}
+  .fresh.stale{color:var(--i4)}
+
+  /* points strip — 一行三點，極簡 */
+  .points{display:flex;gap:8px;margin-top:22px}
+  .pp{flex:1;background:var(--card);border:1px solid var(--line);border-radius:12px;
+      padding:12px 8px;text-align:center}
+  .pp .dot{width:11px;height:11px;border-radius:50%;display:inline-block;margin-bottom:6px}
+  .pp .ar{font-size:13px;color:var(--muted)}
+  .pp .lv{font-size:17px;font-weight:700;margin-top:2px}
+
+  /* tabs */
+  .tabs{display:flex;gap:6px;margin:24px 0 16px}
+  .tab{flex:1;background:var(--bg2);border:1px solid var(--line);border-radius:11px;
+       padding:12px 4px;text-align:center;cursor:pointer;transition:.12s}
+  .tab .rt{font-size:13px;font-weight:700;color:var(--muted);white-space:nowrap}
+  .tab .tg{font-size:11px;color:var(--dim);margin-top:2px}
+  .tab.on{background:var(--card);border-color:var(--sky)}
+  .tab.on .rt{color:var(--txt)} .tab.on.alert{border-color:var(--i4)}
+
+  /* focused path card */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;
+        padding:20px 20px 16px}
+  .card.alert{border-color:var(--accent,var(--line))}
+  .verdict{font-size:17px;font-weight:600;line-height:1.25}
+  .verdict .big{font-size:32px;font-weight:800;display:inline-block;vertical-align:-3px}
+  .hint{font-size:14px;color:var(--muted);margin-top:6px;font-weight:600}
+
+  .meta{display:flex;align-items:center;justify-content:space-between;margin-top:16px}
+  .meta .route{font-size:13px;font-weight:700;color:var(--muted)}
+  .meta .route .raq{color:var(--dim);margin:0 5px}
+  .state{font-size:12px;font-weight:700;padding:3px 11px;border-radius:13px;
+         display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--bg2)}
+  .state .sd{width:7px;height:7px;border-radius:50%;flex:none}
+
+  /* 日預報 context strip（淡） */
+  .day{position:relative;height:26px;margin-top:16px}
+  .day .dtrack{position:absolute;top:7px;left:0;right:0;height:8px;background:var(--bg2);
+               border-radius:4px;border:1px solid var(--line)}
+  .day .dblock{position:absolute;top:5px;height:12px;border-radius:4px;opacity:.5;
+               border:1px solid rgba(255,255,255,.18)}
+  .day .dwin{position:absolute;top:3px;height:16px;border:1.5px solid var(--sky);
+             border-radius:5px;box-sizing:border-box;background:rgba(90,169,255,.08)}
+  .day .dnow{position:absolute;top:1px;width:2px;height:20px;background:var(--sky);border-radius:1px}
+  .day .dticks{position:absolute;top:18px;width:100%;display:flex;justify-content:space-between;
+               font-family:var(--mono);font-size:9px;color:var(--dim)}
+
+  /* zoom：日預報的「下一小時」放大成下面 60 分（無字，用線講關係） */
+  .zoom{display:block;width:100%;height:20px}
+
+  /* 60 分實況 bar（實心） */
+  .tl{position:relative;height:42px}
+  .tl .track{position:absolute;top:16px;left:0;right:0;height:8px;
+             background:var(--bg2);border-radius:4px;border:1px solid var(--line)}
+  .tl .band{position:absolute;top:13px;height:14px;border-radius:7px}
+  .tl .clearmsg{position:absolute;top:11px;width:100%;text-align:center;
+                font-size:13px;color:var(--dry);font-weight:700}
+  .tl .flag{position:absolute;top:-1px;transform:translateX(-50%);
+            font-family:var(--mono);font-size:12px;font-weight:700;white-space:nowrap}
+  .tl .flag.start{transform:none;left:0!important}
+  .tl .ticks{position:absolute;top:28px;width:100%;display:flex;justify-content:space-between;
+             font-family:var(--mono);font-size:10px;color:var(--dim)}
+
+  footer{margin-top:22px;font-size:11px;color:var(--dim);line-height:1.6;text-align:center}
+  .err{color:var(--i4);font-size:13px;margin-top:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <span class="app">路上有雨嗎</span>
+    <span class="mode" id="mode">SHADOW</span>
+  </div>
+  <div class="clock" id="clock">—</div>
+  <div class="fresh" id="fresh">載入中…</div>
+
+  <div class="points" id="points"></div>
+
+  <div class="tabs" id="tabs"></div>
+  <div id="card"></div>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+/* 部署後把這行改成你的 Worker 網址（含 CORS），例如：
+   const DATA_URL = "https://rain-on-route.你的子網域.workers.dev/";
+   本機預覽或還沒部署就留 "data.json"，會 fallback 到內嵌示範資料。 */
+const DATA_URL = "data.json";
+
+/* data.json 契約：
+   points[].mm_hr（mm/hr，非 boolean）
+   day_window:[startHr,endHr]  // 預報 strip 顯示範圍
+   path: {id,from,to,tag,status,eta_min,segment,peak_mm_hr,window_min,confidence,
+          plan:{ state, note, blocks:[{from,to,mm_hr,pop}] }}   // plan = CWA 鄉鎮預報 逐3小時
+   status: clear | raining_now | rain_ahead
+   plan.state: forecast | forming | confirmed | revised | cleared */
+const MOCK = {
+  updated_local:"2026-06-17 11:48", source_age_min:2, mode:"shadow",
+  day_window:[6,24],
+  points:[
+    {id:"A",name:"遠東世紀廣場",area:"中和",mm_hr:0},
+    {id:"B",name:"頂溪站",area:"永和",mm_hr:1.2},
+    {id:"C",name:"瑞光智慧社區",area:"內湖",mm_hr:14}
+  ],
+  paths:[
+    {id:"B-A",from:"B",to:"A",tag:"上班",status:"clear",
+     plan:{state:"forecast",note:"預報 15–18 時有雨 · 實況尚早",
+           blocks:[{from:15,to:18,mm_hr:5,pop:60}]}},
+    {id:"B-C",from:"B",to:"C",tag:"上班",status:"rain_ahead",
+     eta_min:18,segment:"內湖段",peak_mm_hr:6,window_min:[18,38],confidence:"中",
+     plan:{state:"forming",note:"預報 12–15 時 · 實況成形中",
+           blocks:[{from:12,to:15,mm_hr:8,pop:70}]}},
+    {id:"A-B",from:"A",to:"B",tag:"下班",status:"clear",
+     plan:{state:"cleared",note:"今日無明顯降雨預報",blocks:[]}},
+    {id:"C-B",from:"C",to:"B",tag:"下班",status:"raining_now",
+     segment:"內科起點",peak_mm_hr:14,window_min:[0,25],confidence:"高",
+     plan:{state:"confirmed",note:"預報 12:00 · 實況提前 12 分（11:48 已下）",
+           blocks:[{from:12,to:15,mm_hr:12,pop:80}]}}
+  ]
+};
+
+const HORIZON=60, pct=m=>Math.max(0,Math.min(100,(m/HORIZON)*100));
+function classify(mm){
+  if(mm==null||mm<=0) return {t:0,label:"無雨",c:"var(--dim)"};
+  if(mm<1)  return {t:1,label:"毛毛雨",c:"var(--i1)"};
+  if(mm<4)  return {t:2,label:"小雨",c:"var(--i2)"};
+  if(mm<10) return {t:3,label:"中雨",c:"var(--i3)"};
+  if(mm<30) return {t:4,label:"大雨",c:"var(--i4)"};
+  return {t:5,label:"豪雨",c:"var(--i5)"};
+}
+function hint(t){
+  if(t>=5) return "豪雨，改搭捷運或等雨勢";
+  if(t>=4) return "大雨，建議等 10–15 分再走";
+  if(t>=3) return "中雨，記得帶傘";
+  if(t>=2) return "小雨，可直接出發";
+  if(t>=1) return "毛毛雨，影響不大";
+  return "整段乾爽，安心出門";
+}
+
+let DATA=null, sel=0;
+
+function renderPoints(d){
+  document.getElementById("points").innerHTML = d.points.map(p=>{
+    const k=classify(p.mm_hr);
+    return `<div class="pp">
+      <span class="dot" style="background:${k.t?k.c:'var(--dim)'}"></span>
+      <div class="ar">${p.area}</div>
+      <div class="lv" style="color:${k.c}">${k.label}</div></div>`;
+  }).join("");
+}
+function renderTabs(d){
+  const area={}; d.points.forEach(pt=>area[pt.id]=pt.area);
+  document.getElementById("tabs").innerHTML = d.paths.map((p,i)=>{
+    const alert = p.status!=="clear";
+    return `<div class="tab ${i===sel?'on':''} ${alert?'alert':''}" onclick="pick(${i})">
+      <div class="rt">${area[p.from]||p.from}→${area[p.to]||p.to}</div><div class="tg">${p.tag||''}</div></div>`;
+  }).join("");
+}
+const PSTATE={
+  forecast:{label:"預報中",c:"var(--dim)"},
+  forming:{label:"成形中",c:"var(--i3)"},
+  confirmed:{label:"已確認",c:"var(--i4)"},
+  revised:{label:"已修正",c:"var(--i3)"},
+  cleared:{label:"已解除",c:"var(--dry)"}
+};
+function nowHrOf(d){
+  const t=(d.updated_local||"").split(" ")[1]||"12:00";
+  const [hh,mm]=t.split(":").map(Number); return (hh||0)+(mm||0)/60;
+}
+function dayContext(plan,dayWin,nowHr){
+  const w0=(dayWin&&dayWin[0])??6, w1=(dayWin&&dayWin[1])??24, span=(w1-w0)||1;
+  const posHr=h=>Math.max(0,Math.min(100,(h-w0)/span*100));
+  let blocks="";
+  ((plan&&plan.blocks)||[]).forEach(b=>{
+    const ck=classify(b.mm_hr), l=posHr(b.from), w=Math.max(2.5,posHr(b.to)-posHr(b.from));
+    blocks+=`<div class="dblock" style="left:${l}%;width:${w}%;background:${ck.c}" title="${b.from}-${b.to}時 ${ck.label}${b.pop?' '+b.pop+'%':''}"></div>`;
+  });
+  let ticks="";
+  for(let h=w0;h<=w1;h+=3) ticks+=`<span>${String(h%24).padStart(2,'0')}</span>`;
+  const L=posHr(nowHr), R=Math.max(L+2,posHr(nowHr+1));
+  const html=`<div class="day"><div class="dtrack"></div>${blocks}`+
+    `<div class="dwin" style="left:${L}%;width:${R-L}%"></div>`+
+    `<div class="dnow" style="left:${L}%"></div>`+
+    `<div class="dticks">${ticks}</div></div>`;
+  return {html,L,R};
+}
+function zoomSVG(L,R){
+  return `<svg class="zoom" viewBox="0 0 100 20" preserveAspectRatio="none">`+
+    `<polygon points="${L},0 ${R},0 100,20 0,20" fill="var(--sky)" opacity="0.07"/>`+
+    `<line x1="${L}" y1="0" x2="0" y2="20" stroke="var(--sky)" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0.4"/>`+
+    `<line x1="${R}" y1="0" x2="100" y2="20" stroke="var(--sky)" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0.4"/></svg>`;
+}
+function renderCard(d){
+  const p=d.paths[sel], k=classify(p.peak_mm_hr);
+  const area={}; d.points.forEach(pt=>area[pt.id]=pt.area);
+  let vtxt,band="",flag="",clearmsg="",accent="var(--line)";
+  if(p.status==="clear"){
+    vtxt=`<span class="big" style="color:var(--dry)">整段無雨</span>`;
+    clearmsg=`<div class="clearmsg">— 60 分內無雨 —</div>`;
+  }else if(p.status==="raining_now"){
+    accent=k.c;
+    vtxt=`出發就遇 <span class="big" style="color:${k.c}">${k.label}</span>`;
+    const w=p.window_min||[0,25];
+    band=`<div class="band" style="left:0;width:${pct(w[1])}%;background:${k.c}"></div>`;
+    flag=`<div class="flag start" style="color:${k.c}">↓ ${p.segment||'正在下'}</div>`;
+  }else{
+    accent=k.c;
+    vtxt=`約 <span class="big" style="color:${k.c}">${p.eta_min}分</span>後遇 <span style="color:${k.c};font-weight:800">${k.label}</span>`;
+    const w=p.window_min||[p.eta_min,p.eta_min+15];
+    band=`<div class="band" style="left:${pct(w[0])}%;width:${Math.max(5,pct(w[1])-pct(w[0]))}%;background:${k.c}"></div>`;
+    flag=`<div class="flag" style="left:${pct(p.eta_min)}%;color:${k.c}">+${p.eta_min}m${p.segment?' · '+p.segment:''}</div>`;
+  }
+  const nowHr=nowHrOf(d);
+  const ps=PSTATE[(p.plan&&p.plan.state)]||PSTATE.forecast;
+  const stateChip=`<span class="state"><span class="sd" style="background:${ps.c}"></span>`+
+    `<span style="color:${ps.c}">${ps.label}</span></span>`;
+  const dc=dayContext(p.plan,d.day_window,nowHr);
+  document.getElementById("card").innerHTML =
+    `<div class="card ${p.status!=='clear'?'alert':''}" style="--accent:${accent}">
+      <div class="verdict">${vtxt}</div>
+      <div class="hint">${hint(k.t)}</div>
+      <div class="meta">
+        <span class="route">${area[p.from]||p.from}<span class="raq">→</span>${area[p.to]||p.to}</span>
+        ${stateChip}
+      </div>
+      ${dc.html}
+      ${zoomSVG(dc.L,dc.R)}
+      <div class="tl">
+        <div class="track"></div>${band}${clearmsg}${flag}
+        <div class="ticks"><span>現在</span><span>+15</span><span>+30</span><span>+45</span><span>+60</span></div>
+      </div>
+    </div>`;
+}
+function pick(i){ sel=i; renderTabs(DATA); renderCard(DATA); }
+
+function render(d){
+  DATA=d;
+  document.getElementById("clock").textContent=(d.updated_local||"").split(" ")[1]||"—";
+  const age=d.source_age_min, f=document.getElementById("fresh");
+  f.textContent=`資料 ${age} 分前更新`; f.className="fresh"+(age>=10?" stale":"");
+  document.getElementById("mode").textContent=d.mode==="shadow"?"SHADOW":"LIVE";
+  // 預設依時段選路徑：早上挑第一個「上班」，其餘挑第一個「下班」
+  const h=new Date().getHours();
+  const want=(h>=5&&h<12)?"上班":"下班";
+  const idx=d.paths.findIndex(p=>p.tag===want);
+  sel=idx>=0?idx:0;
+  renderPoints(d); renderTabs(d); renderCard(d);
+  document.getElementById("footer").innerHTML=
+    `中央氣象署 雷達/雨量站 · 強度 mm/hr 分級 · 僅供參考非即時警報`;
+}
+
+(async function(){
+  try{
+    const r=await fetch(DATA_URL,{cache:"no-store"});
+    if(!r.ok) throw 0;
+    render(await r.json());
+  }catch(e){
+    render(MOCK);
+    document.getElementById("footer").innerHTML+=
+      `<div class="err">（內嵌示範資料：找不到 data.json）</div>`;
+  }
+})();
+
+if("serviceWorker" in navigator){
+  window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
+}
+</script>
+</body>
+</html>
