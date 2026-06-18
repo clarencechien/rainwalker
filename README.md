@@ -1,37 +1,30 @@
-# rain-on-route
+# rainwalker — 單一 Worker（UI + data.json + cron）
 
-通勤遇雨 dashboard（雙北固定 3 點 / 4 路徑）。Cloudflare Pages（UI）+ Worker（cron 抓 CWA 寫 R2）。
+全部手動 web 操作、無需 CLI。一個 Worker 同時：服務 UI、用 R2 出 `/data.json`、跑 cron 寫 R2。
 
-## 結構
-- `index.html` — UI（讀 `DATA_URL`，預設 `data.json`，找不到時 fallback 內嵌示範資料）
-- `data.json` — 種子資料；Pages 先靜態服務這個，Worker 上線後切換 `DATA_URL`
-- `worker/` — cron Worker：抓 CWA → 算 → 寫 R2 的 `data.json`
-  - `wrangler.toml` — cron `*/10`、R2 binding
-  - `points.json` — A/B/C 座標、最近雨量站 id、鄉鎮代碼、路徑（config-driven）
-  - `src/index.js` — 骨架，真資料位置標 TODO
+## 重點
+- `wrangler.toml` 必須在 **repo 根目錄**（Cloudflare 連動 build 才會套用 assets / cron / R2）。
+- R2 bucket 名稱必須等於 `wrangler.toml` 裡的 `bucket_name`（預設 `rainwalker`）。
 
-## 1. 先上 UI（Cloudflare Pages）
-1. push 這個 repo 到 GitHub。
-2. Cloudflare 後台 → Workers & Pages → Create → Pages → 連這個 repo。
-3. Build 設定：無 build command、輸出目錄填 `/`（根目錄即靜態網站）。Deploy。
-4. 拿到 `https://rain-on-route.pages.dev`，此時讀的是 repo 裡的種子 `data.json`。
+## 步驟（接續你現有的 rainwalker Worker）
+1. 把這包檔案放到 GitHub repo **根目錄**（`wrangler.toml`、`public/`、`src/` 都在最上層），push。
+2. R2：後台 → R2 → 確認有一個 bucket 叫 `rainwalker`（沒有就 Create bucket，名稱填 `rainwalker`）。
+3. 你的 rainwalker Worker 連著這個 repo，push 後會自動 rebuild。build 完成後到
+   Worker → Settings 確認：
+   - **Bindings** 出現 R2：變數名 `BUCKET` → bucket `rainwalker`
+   - **Triggers / Cron** 出現 `*/10 * * * *`
+   （這些由 `wrangler.toml` 自動設定；若沒出現，見下方「手動補」）
+4. 開 `https://rainwalker.sw-tech.workers.dev/` → UI 載入、抓同源 `/data.json` → 看到示範資料。
+5. 開一次 `https://rainwalker.sw-tech.workers.dev/refresh` → 把 data.json 寫進 R2；之後 `/data.json` 就從 R2 來。
+6. `DATA_URL` 已是同源 `/data.json`，不用再改。
 
-## 2. 再上 Worker（cron + R2）
-```bash
-cd worker
-npm i -g wrangler
-wrangler r2 bucket create rain-on-route
-wrangler secret put CWA_KEY          # 貼新的 CWA 授權碼（舊的記得作廢）
-wrangler deploy
-# 測試：開 https://rain-on-route.<子網域>.workers.dev/refresh 觸發一次，再開根路徑看 data.json
-```
+## CWA 授權碼（之後接真資料要用，先設好）
+Worker → Settings → Variables and Secrets → Add：
+- 名稱 `CWA_KEY`、值=你的新授權碼、類型 **Secret(加密)**。
 
-## 3. 把 UI 接到 Worker
-編輯 `index.html` 頂端：
-```js
-const DATA_URL = "https://rain-on-route.<你的子網域>.workers.dev/";
-```
-重新 deploy Pages。前端就改讀 Worker 即時產的 `data.json`。
+## 若 build 後 Bindings/Cron 沒自動出現（手動補）
+- R2：Worker → Settings → Bindings → Add → R2 bucket → 變數名 `BUCKET` → 選 `rainwalker`。
+- Cron：Worker → Settings → Triggers → Cron Triggers → Add → `*/10 * * * *`。
 
-## 4. 邊寫邊驗：填真資料
-在 `worker/src/index.js` 的 `buildData()` 把四個 TODO 補上（雨量站現況 → 鄉鎮預報 plan → QPF 臨近 → 對帳 state）。`cwaFetch()` 已封裝好 datastore / fileapi 兩條路徑。
+## 下一步：邊寫邊驗
+把 `src/index.js` 的 `buildData()` 四個 TODO 補上真資料。`cwaFetch()` 已封好 datastore/fileapi。
