@@ -60,6 +60,17 @@ export default {
       });
     }
 
+    // 除錯：探預報資料集結構（ds/loc 可帶 query 試不同編號）
+    if (url.pathname === "/fc") {
+      const ds = url.searchParams.get("ds") || "F-D0047-091";
+      const loc = url.searchParams.get("loc") || "中和區";
+      try {
+        const raw = await cwaFetch(ds, env.CWA_KEY, { params: { LocationName: loc } });
+        const recs = raw && raw.records || {};
+        return json({ ds, loc, keys: Object.keys(recs), preview: JSON.stringify(recs).slice(0, 2200) });
+      } catch (e) { return json({ ds, error: String(e) }, 500); }
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
@@ -77,12 +88,16 @@ async function buildData(env) {
 
 // ── 現況層（真資料）─────────────────────────────────────────────
 async function buildLive(env) {
-  const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));
+  // 已知 station id 就只抓那幾站（payload 從 ~1300 站縮到 3 站，CPU 安全）
+  const ids = CONFIG.points.map(p => p.station).filter(s => s && s !== "TODO");
+  const params = (ids.length === CONFIG.points.length) ? { StationId: ids.join(",") } : {};
+  const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY, { params }));
   if (!stations.length) throw new Error("no stations parsed");
+  const byId = Object.fromEntries(stations.map(s => [s.id, s]));
 
   const points = CONFIG.points.map(p => {
-    const n = nearestStation(stations, p.lat, p.lng);
-    return { id: p.id, name: p.name, area: p.area, mm_hr: n ? n.mm_hr : 0 };
+    const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
+    return { id: p.id, name: p.name, area: p.area, mm_hr: st ? st.mm_hr : 0 };
   });
   const mmOf = Object.fromEntries(points.map(p => [p.id, p.mm_hr]));
 
