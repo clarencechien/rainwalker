@@ -273,6 +273,59 @@ export default {
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
+    // 除錯：定案 layout + 判斷 -99 是沒雨還是定位錯
+    if (url.pathname === "/qpfll") {
+      const key = (env.CWA_KEY || "").trim();
+      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
+      try {
+        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
+        const inf = raw.cwaopendata.dataset.datasetInfo.parameterSet;
+        const lon0 = +inf.StartPointLongitude, lat0 = +inf.StartPointLatitude, res = +inf.GridResolution;
+        const NX = +inf.GridDimensionX, NY = +inf.GridDimensionY;
+        let body = raw.cwaopendata.dataset.contents.content;
+        if (typeof body !== "string") body = body["#text"] || body._ || "";
+        const vals = body.split(",").map(Number);
+        // 兩種 layout 的「線性index → 經緯度」反推
+        const inv = {
+          L1_lonFast: k => { const ix = k % NX, row = Math.floor(k / NX), iys = (NY - 1) - row; return [lon0 + ix * res, lat0 + iys * res]; },
+          L2_latFast: k => { const ix = Math.floor(k / NY), iyn = k % NY, iys = (NY - 1) - iyn; return [lon0 + ix * res, lat0 + iys * res]; }
+        };
+        const onIsland = (lo, la) => lo >= 119.8 && lo <= 122.2 && la >= 21.8 && la <= 25.4;
+        const bbox = {};
+        for (const name in inv) {
+          let loMin = 999, loMax = -999, laMin = 999, laMax = -999, isl = 0, tot = 0;
+          for (let k = 0; k < vals.length; k++) { if (vals[k] <= -98) continue; tot++;
+            const [lo, la] = inv[name](k);
+            if (lo < loMin) loMin = lo; if (lo > loMax) loMax = lo; if (la < laMin) laMin = la; if (la > laMax) laMax = la;
+            if (onIsland(lo, la)) isl++; }
+          bbox[name] = { lon: [+loMin.toFixed(2), +loMax.toFixed(2)], lat: [+laMin.toFixed(2), +laMax.toFixed(2)], on_island: isl, ratio: +(isl / tot).toFixed(3) };
+        }
+        // 正向 index（兩 layout），取 A/B/C 中心值 + 3x3 + 最近有效格
+        const fwd = {
+          L1_lonFast: (lat, lng) => { const ix = Math.round((lng - lon0) / res), iys = Math.round((lat - lat0) / res); return ((NY - 1) - iys) * NX + ix; },
+          L2_latFast: (lat, lng) => { const ix = Math.round((lng - lon0) / res), iys = Math.round((lat - lat0) / res); return ix * NY + ((NY - 1) - iys); }
+        };
+        const winner = bbox.L1_lonFast.on_island >= bbox.L2_latFast.on_island ? "L1_lonFast" : "L2_latFast";
+        const f = fwd[winner];
+        const pts = CONFIG.points.map(p => {
+          const ix = Math.round((p.lng - lon0) / res), iys = Math.round((p.lat - lat0) / res);
+          let n3 = [];
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const k = winner === "L1_lonFast" ? ((NY - 1) - (iys + dy)) * NX + (ix + dx) : (ix + dx) * NY + ((NY - 1) - (iys + dy));
+            n3.push(vals[k]);
+          }
+          // 最近有效格（在 ±20 格內找）
+          let near = null, nd = 1e9;
+          for (let dy = -20; dy <= 20; dy++) for (let dx = -20; dx <= 20; dx++) {
+            const k = winner === "L1_lonFast" ? ((NY - 1) - (iys + dy)) * NX + (ix + dx) : (ix + dx) * NY + ((NY - 1) - (iys + dy));
+            if (vals[k] > -98) { const d = Math.hypot(dx, dy); if (d < nd) { nd = d; near = { v: vals[k], cells: +d.toFixed(1), km: +(d * res * 111).toFixed(1) }; } }
+          }
+          return { id: p.id, area: p.area, center: vals[f(p.lat, p.lng)], n3, nearest_valid: near };
+        });
+        return json({ NX, NY, bbox, winner, points: pts });
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
