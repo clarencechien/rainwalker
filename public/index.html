@@ -34,7 +34,8 @@ font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-web
 .bigsub{font-size:12px;color:var(--dim);margin-top:2px}
 .bigverdict{font-size:34px;font-weight:800;margin-top:auto;line-height:1.2;text-shadow:0 2px 8px rgba(0,0,0,.4)}
 .bighint{font-size:15px;color:var(--txt);opacity:.92;margin-top:8px}
-.bigup{margin-top:20px;font-size:13px;color:var(--muted)}
+.bigup{margin-top:20px;font-size:15px;font-weight:700}
+.biglabel{font-size:11px;color:var(--dim);margin:14px 0 6px;font-weight:700}
 .bignear{font-size:12px;color:var(--i3);margin-top:6px}
 .rib{display:flex;gap:4px;margin-top:10px;align-items:flex-end;height:30px}
 .rib .seg{flex:1;border-radius:4px;transition:height .7s,background .5s}
@@ -189,13 +190,18 @@ function renderSimple(){
   const hrs=ss.map(s=>`<span>${String(s.h%24).padStart(2,'0')}</span>`).join("");
   const nmax=Math.max(0,...(HERE.nearby||[]).map(s=>s.mm_hr||0));
   const nearNote=(nmax>h.mm_hr+1)?`<div class="bignear">附近有測站雨勢更大（最大 ${nmax} mm/hr）</div>`:"";
+  const q=h.qpf_1h; let qline,qcol="var(--muted)";
+  if(q==null){ qline="未來：稍後 "+upcoming(HERE.plan); }
+  else if(q>0){ const qk=classify(q); qline="未來 1 小時：可能下 "+q+" mm（你附近 1.25km）"; qcol=qk.c; }
+  else { qline="未來 1 小時：附近沒有雨勢移入"; qcol="var(--dry)"; }
   v.innerHTML=`<div class="wcard bigcard">
     <div class="wfill" style="height:${fillH(h.mm_hr)}%;background:${k.c}"></div>
     <div class="inner">
       <div><div class="bigloc">所在地 · ${h.county||""}</div><div class="bigsub">最近測站 ${h.name||""}</div></div>
       <div class="bigverdict" style="color:${k.t?'#fff':'var(--txt)'}">${vd.title}</div>
       <div class="bighint">${vd.hint}</div>
-      <div class="bigup">稍後：${upcoming(HERE.plan)}</div>
+      <div class="bigup" style="color:${qcol}">${qline}</div>
+      <div class="biglabel">今日預報（每 3 小時 · 縣市級）</div>
       <div class="rib">${segs}</div><div class="rhrs">${hrs}</div>
       ${nearNote}
     </div></div>`;
@@ -278,6 +284,7 @@ function renderDetail(label,at){
     `<div class="dpanel">
       <div class="dhead"><div><div class="dttl">${label}</div><div class="dsub">${cty}${at.here?' · 最近站 '+at.here.name:''}</div></div>
         <button class="dclose" onclick="closeDetail()">✕</button></div>
+      ${(function(){const q=at.here&&at.here.qpf_1h;if(q==null)return"";const t=q>0?`可能下 ${q} mm`:"沒有雨勢移入";const c=q>0?classify(q).c:"var(--dry)";return `<div class="dlabel">未來 1 小時（雷達推估 · 1.25km）</div><div style="font-size:15px;font-weight:700;color:${c}">${t}</div>`;})()}
       <div class="dlabel">今日預報（${cty}逐 3 小時）</div>
       <div class="rib">${segs}</div><div class="rhrs">${hrs}</div>
       <div class="dlabel">附近測站現況（mm/hr）</div>
@@ -295,7 +302,7 @@ function initGeo(force){
     const lat=pos.coords.latitude, lng=pos.coords.longitude;
     try{
       const at=await (await fetch(`/at?lat=${lat}&lng=${lng}&n=8`,{cache:"no-store"})).json();
-      if(at&&!at.error){ HERE={lat,lng,here:at.here,plan:at.plan,nearby:at.nearby,day_window:at.day_window}; renderActive(); }
+      if(at&&!at.error){ HERE={lat,lng,here:at.here,plan:at.plan,nearby:at.nearby,day_window:at.day_window,qpf_time:at.qpf_time}; renderActive(); }
     }catch(e){}
   },()=>{ if(force) alert("無法取得定位，請檢查權限"); renderActive(); },{timeout:8000,maximumAge:300000});
 }
