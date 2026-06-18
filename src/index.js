@@ -48,6 +48,18 @@ export default {
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
+    // 除錯：檢查 CWA_KEY 是否設對（不洩漏內容）
+    if (url.pathname === "/keycheck") {
+      const k = env.CWA_KEY || "";
+      const t = k.trim();
+      return json({
+        set: !!k, raw_len: k.length, trimmed_len: t.length,
+        has_outer_whitespace: k !== t,
+        starts_with_CWA: t.startsWith("CWA-"),
+        looks_valid_format: /^CWA-[0-9A-Fa-f-]{36}$/.test(t)
+      });
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
@@ -148,11 +160,12 @@ function haversine(la1, lo1, la2, lo2) {
 }
 
 async function cwaFetch(dataId, key, { fileapi = false, format = "JSON", params = {} } = {}) {
-  if (!key) throw new Error("CWA_KEY not set");
+  const k = (key || "").trim();
+  if (!k) throw new Error("CWA_KEY not set");
   const base = fileapi
     ? `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/${dataId}`
     : `https://opendata.cwa.gov.tw/api/v1/rest/datastore/${dataId}`;
-  const q = new URLSearchParams({ Authorization: key, format, ...params });
+  const q = new URLSearchParams({ Authorization: k, format, ...params });
   const r = await fetch(`${base}?${q}`, { headers: { accept: "application/json", "user-agent": "rainwalker" } });
   if (!r.ok) throw new Error(`CWA ${dataId} HTTP ${r.status}`);
   return format === "JSON" ? r.json() : r.text();
