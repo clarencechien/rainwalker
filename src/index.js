@@ -82,6 +82,26 @@ export default {
       } catch (e) { return json({ ds, error: String(e) }, 500); }
     }
 
+    // 任意座標：最近站現況 + 縣市預報 + 附近 N 站
+    if (url.pathname === "/at") {
+      const lat = +url.searchParams.get("lat"), lng = +url.searchParams.get("lng");
+      const n = Math.min(10, +url.searchParams.get("n") || 6);
+      if (!isFinite(lat) || !isFinite(lng)) return json({ error: "need lat,lng" }, 400);
+      try {
+        const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));
+        const fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]);
+        const sorted = stations.map(s => ({ ...s, dist: haversine(lat, lng, s.lat, s.lng) })).sort((a, b) => a.dist - b.dist);
+        const here = sorted[0] || null;
+        const county = here ? here.county : null;
+        return json({
+          lat, lng, day_window: CONFIG.day_window || [6, 24],
+          here: here ? { name: here.name, mm_hr: here.mm_hr, county } : null,
+          plan: county ? (fc[county] || []) : [],
+          nearby: sorted.slice(0, n).map(s => ({ name: s.name, area: s.county, mm_hr: s.mm_hr, dist_km: +s.dist.toFixed(2) }))
+        });
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
@@ -107,14 +127,14 @@ async function buildLive(env) {
   const byId = Object.fromEntries(stations.map(s => [s.id, s]));
   const points = CONFIG.points.map(p => {
     const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
-    return { id: p.id, name: p.name, area: p.area, mm_hr: st ? st.mm_hr : 0 };
+    return { id: p.id, name: p.name, area: p.area, lat: p.lat, lng: p.lng, mm_hr: st ? st.mm_hr : 0 };
   });
   const mmOf = Object.fromEntries(points.map(p => [p.id, p.mm_hr]));
   const countyOf = Object.fromEntries(CONFIG.points.map(p => [p.id, p.county]));
 
   // 預報：縣市逐3小時 PoP（失敗不影響現況）
   let fc = {};
-  try { fc = await fetchForecast(env.CWA_KEY, CONFIG.day_window || [6, 24]); }
+  try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); }
   catch (e) { fc = { _err: String(e) }; }
 
   const d8 = new Date(Date.now() + 8 * 3600 * 1000);
@@ -138,52 +158,48 @@ async function buildLive(env) {
   return {
     updated_local: d8.toISOString().slice(0, 16).replace("T", " "),
     source_age_min: obs ? Math.max(0, Math.round((Date.now() - Date.parse(obs)) / 60000)) : 0,
-    mode: "shadow", _source: "live", _fc: Object.keys(fc),
+    mode: "shadow", _source: "live", _fc: Object.keys(fc).length,
     day_window: CONFIG.day_window || [6, 24],
     points, paths
   };
 }
 
-// 抓縣市逐3小時預報 → 每個縣市回 [{from,to,pop,mm_hr}]（只今天、day_window 內、PoP>=30）
-async function fetchForecast(key, dayWin) {
+// 抓全台縣市逐3小時預報 → { 縣市名: [{from,to,pop,mm_hr}] }（只今天、day_window、PoP>=30）
+async function fetchForecastAll(key, dayWin) {
   const [w0, w1] = dayWin;
-  const raw = await cwaFetch("F-D0047-089", key, { params: {
-    ElementName: "3小時降雨機率,天氣現象"
-  }});
-  const found = findLocations(raw, ["新北市", "臺北市", "台北市"]);
+  const raw = await cwaFetch("F-D0047-089", key, { params: { ElementName: "3小時降雨機率,天氣現象" } });
   const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
   const out = {};
-  for (const name in found) {
-    const pops = {}, wxs = {};
-    for (const el of (found[name].WeatherElement || [])) {
-      const isPop = /降雨機率|Probability/i.test(el.ElementName);
-      const isWx = /天氣現象/.test(el.ElementName);
-      for (const t of (el.Time || [])) {
-        const v = (t.ElementValue && t.ElementValue[0]) || {};
-        if (isPop) pops[t.StartTime] = { start: t.StartTime, end: t.EndTime, pop: +(v.ProbabilityOfPrecipitation ?? v.Value ?? -1) };
-        if (isWx) wxs[t.StartTime] = v.Weather || v.WeatherDescription || v.Value || "";
-      }
-    }
-    const blocks = [];
-    for (const k in pops) {
-      const b = pops[k];
-      if (!b.start.startsWith(today)) continue;
-      const from = hourOf(b.start), to = hourOf(b.end) || 24;
-      if (to <= w0 || from >= w1 || b.pop < 30) continue;
-      blocks.push({ from, to, pop: b.pop, mm_hr: wxToMm(wxs[k] || "", b.pop) });
-    }
-    out[name] = blocks.sort((a, b) => a.from - b.from);
-  }
+  for (const loc of collectLocations(raw)) out[loc.LocationName] = locBlocks(loc, w0, w1, today);
   return out;
 }
-
-// 遞迴找指定 LocationName 的節點（防多層巢狀）
-function findLocations(node, want, out = {}) {
+function collectLocations(node, out = []) {
   if (!node || typeof node !== "object") return out;
-  if (Array.isArray(node)) { node.forEach(n => findLocations(n, want, out)); return out; }
-  if (node.LocationName && want.includes(node.LocationName) && node.WeatherElement) out[node.LocationName] = node;
-  for (const k in node) { const v = node[k]; if (v && typeof v === "object") findLocations(v, want, out); }
+  if (Array.isArray(node)) { node.forEach(n => collectLocations(n, out)); return out; }
+  if (node.LocationName && node.WeatherElement) out.push(node);
+  for (const k in node) { const v = node[k]; if (v && typeof v === "object") collectLocations(v, out); }
   return out;
+}
+function locBlocks(loc, w0, w1, today) {
+  const pops = {}, wxs = {};
+  for (const el of (loc.WeatherElement || [])) {
+    const isPop = /降雨機率|Probability/i.test(el.ElementName);
+    const isWx = /天氣現象/.test(el.ElementName);
+    for (const t of (el.Time || [])) {
+      const v = (t.ElementValue && t.ElementValue[0]) || {};
+      if (isPop) pops[t.StartTime] = { start: t.StartTime, end: t.EndTime, pop: +(v.ProbabilityOfPrecipitation ?? v.Value ?? -1) };
+      if (isWx) wxs[t.StartTime] = v.Weather || v.WeatherDescription || v.Value || "";
+    }
+  }
+  const blocks = [];
+  for (const k in pops) {
+    const b = pops[k];
+    if (!b.start.startsWith(today)) continue;
+    const from = hourOf(b.start), to = hourOf(b.end) || 24;
+    if (to <= w0 || from >= w1 || b.pop < 30) continue;
+    blocks.push({ from, to, pop: b.pop, mm_hr: wxToMm(wxs[k] || "", b.pop) });
+  }
+  return blocks.sort((a, b) => a.from - b.from);
 }
 function hourOf(iso) { const m = /T(\d{2}):/.exec(iso || ""); return m ? +m[1] : 0; }
 function wxToMm(wx, pop) {
@@ -213,7 +229,8 @@ function extractStations(raw) {
     const c = getWGS84(s);
     if (!c) continue;
     out.push({ name: s.StationName || s.locationName || s.StationId, id: s.StationId,
-               lat: c.lat, lng: c.lng, mm_hr: getRainRate(s), obsTime: getObsTime(s) });
+               lat: c.lat, lng: c.lng, mm_hr: getRainRate(s), obsTime: getObsTime(s),
+               county: (s.GeoInfo && s.GeoInfo.CountyName) || s.CountyName || null });
   }
   return out;
 }
