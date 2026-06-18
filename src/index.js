@@ -9,7 +9,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // data.json：優先 R2，沒有就即時算
     if (url.pathname === "/data.json") {
       try {
         const obj = await env.BUCKET.get("data.json");
@@ -18,71 +17,12 @@ export default {
       return json(await buildData(env));
     }
 
-    // 手動觸發寫 R2
     if (url.pathname === "/refresh") {
       try { await refresh(env); return json({ ok: true, at: new Date().toISOString() }); }
       catch (e) { return json({ ok: false, error: String(e) }, 500); }
     }
 
-    // 除錯：每個點對到的最近雨量站 + 現在雨量 + 距離
-    if (url.pathname === "/nearest") {
-      try {
-        const st = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));
-        return json({ station_count: st.length, points: CONFIG.points.map(p => {
-          const n = nearestStation(st, p.lat, p.lng);
-          return { point: p.id, area: p.area,
-            station: n ? n.name : null, id: n ? n.id : null,
-            mm_hr: n ? n.mm_hr : null,
-            dist_km: n ? +haversine(p.lat, p.lng, n.lat, n.lng).toFixed(2) : null };
-        })});
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
-    // 除錯：原始結構（top keys + 站數 + 第一筆樣本）
-    if (url.pathname === "/probe") {
-      try {
-        const raw = await cwaFetch("O-A0002-001", env.CWA_KEY);
-        const recs = raw && raw.records || {};
-        const arr = recs.Station || recs.station || recs.location || [];
-        return json({ topKeys: Object.keys(recs), count: arr.length, sample: arr[0] || null });
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
-    // 除錯：檢查 CWA_KEY 是否設對（不洩漏內容）
-    if (url.pathname === "/keycheck") {
-      const k = env.CWA_KEY || "";
-      const t = k.trim();
-      return json({
-        set: !!k, raw_len: k.length, trimmed_len: t.length,
-        has_outer_whitespace: k !== t,
-        starts_with_CWA: t.startsWith("CWA-"),
-        looks_valid_format: /^CWA-[0-9A-Fa-f-]{36}$/.test(t)
-      });
-    }
-
-    // 除錯：探預報資料集結構（預設不過濾，挖第一鄉鎮 + PoP element）
-    if (url.pathname === "/fc") {
-      const ds = url.searchParams.get("ds") || "F-D0047-089";
-      const loc = url.searchParams.get("loc");
-      try {
-        const params = loc ? { LocationName: loc } : {};
-        const raw = await cwaFetch(ds, env.CWA_KEY, { params });
-        const top = raw && raw.records && raw.records.Locations && raw.records.Locations[0] || {};
-        const locs = top.Location || [];
-        const first = locs[0] || null;
-        const els = first ? (first.WeatherElement || []) : [];
-        const pop = els.find(e => /降雨|機率|PoP|Probability/i.test(e.ElementName || "")) || els[0] || null;
-        const trim = e => { if (!e) return null; const c = { ...e }; if (c.Time) c.Time = c.Time.slice(0, 3); return c; };
-        return json({
-          ds, desc: top.DatasetDescription, count: locs.length,
-          names: locs.slice(0, 6).map(l => l.LocationName),
-          elementNames: els.map(e => e.ElementName),
-          popSample: trim(pop)
-        });
-      } catch (e) { return json({ ds, error: String(e) }, 500); }
-    }
-
-    // 任意座標：最近站現況 + 縣市預報 + 附近 N 站
+    // 任意座標：最近站現況 + 縣市3小時預報 + 未來1小時QPF + 附近N站
     if (url.pathname === "/at") {
       const lat = +url.searchParams.get("lat"), lng = +url.searchParams.get("lng");
       const n = Math.min(10, +url.searchParams.get("n") || 6);
@@ -90,315 +30,56 @@ export default {
       try {
         const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));
         const fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]);
+        const qpf = await readQpf(env);
         const sorted = stations.map(s => ({ ...s, dist: haversine(lat, lng, s.lat, s.lng) })).sort((a, b) => a.dist - b.dist);
         const here = sorted[0] || null;
         const county = here ? here.county : null;
         return json({
-          lat, lng, day_window: CONFIG.day_window || [6, 24],
-          here: here ? { name: here.name, mm_hr: here.mm_hr, county } : null,
+          lat, lng, day_window: CONFIG.day_window || [6, 24], qpf_time: qpf ? qpf.datetime : null,
+          here: here ? { name: here.name, mm_hr: here.mm_hr, county, qpf_1h: qpfAt(qpf, lat, lng) } : null,
           plan: county ? (fc[county] || []) : [],
           nearby: sorted.slice(0, n).map(s => ({ name: s.name, area: s.county, mm_hr: s.mm_hr, dist_km: +s.dist.toFixed(2) }))
         });
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
-    // 除錯：探 QPF 格點 F-B0046（看格式/大小，決定能不能接）
-    if (url.pathname === "/qpf") {
-      const ds = url.searchParams.get("ds") || "F-B0046-001";
-      const api = url.searchParams.get("api") || "fileapi";
-      const key = (env.CWA_KEY || "").trim();
-      const base = api === "datastore"
-        ? `https://opendata.cwa.gov.tw/api/v1/rest/datastore/${ds}`
-        : `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/${ds}`;
-      try {
-        const r = await fetch(`${base}?Authorization=${key}&format=JSON`, { headers: { accept: "*/*", "user-agent": "rainwalker" } });
-        const buf = new Uint8Array(await r.arrayBuffer());
-        const n = buf.length;
-        const hex = Array.from(buf.slice(0, 4)).map(b => b.toString(16).padStart(2, "0")).join(" ");
-        const a = String.fromCharCode(...buf.slice(0, 8));
-        let fmt = "unknown";
-        if (a.startsWith("GRIB")) fmt = "GRIB";
-        else if (buf[0] === 0x1f && buf[1] === 0x8b) fmt = "gzip";
-        else if (a.startsWith("PK")) fmt = "zip/KMZ";
-        else if (a.replace(/^\s+/, "").startsWith("{") || a.replace(/^\s+/, "").startsWith("[")) fmt = "JSON";
-        else if (a.replace(/^\s+/, "").startsWith("<")) fmt = "XML";
-        const preview = (fmt === "JSON" || fmt === "XML" || fmt === "unknown")
-          ? new TextDecoder().decode(buf.slice(0, 800)) : "(binary)";
-        return json({ ds, api, status: r.status, content_type: r.headers.get("content-type"),
-          content_length: r.headers.get("content-length"), bytes: n, kb: +(n / 1024).toFixed(1),
-          magic_hex: hex, format_guess: fmt, preview });
-      } catch (e) { return json({ ds, api, error: String(e) }, 500); }
-    }
-
-    // 除錯：計時 QPF parse + 取三點/雙北子網格（決定免費接得動否）
-    if (url.pathname === "/qpfparse") {
-      const key = (env.CWA_KEY || "").trim();
-      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
-      try {
-        const t0 = Date.now();
-        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
-        const t1 = Date.now();                       // fetch+parse JSON 物件
-        const info = raw.cwaopendata.dataset.datasetInfo.parameterSet;
-        const lon0 = +info.StartPointLongitude, lat0 = +info.StartPointLatitude;
-        const res = +info.GridResolution, nx = +info.GridDimensionX, ny = +info.GridDimensionY;
-        // 取出逗號分隔的格點數值陣列
-        let body = raw.cwaopendata.dataset.contents.content;
-        if (typeof body !== "string") body = body && (body["#text"] || body._ || JSON.stringify(body));
-        const t2 = Date.now();
-        const vals = body.split(",");                // 24.7 萬個字串
-        const t3 = Date.now();
-        const idx = (lat, lng) => {
-          const ix = Math.round((lng - lon0) / res), iy = Math.round((lat - lat0) / res);
-          if (ix < 0 || iy < 0 || ix >= nx || iy >= ny) return null;
-          return iy * nx + ix;                       // row-major（待驗證方向）
-        };
-        const PTS = CONFIG.points.map(p => {
-          const i = idx(p.lat, p.lng);
-          return { id: p.id, area: p.area, gi: i, qpf_mm: i != null ? +vals[i] : null };
-        });
-        // 雙北子網格範圍（只數格數，不展開）
-        const bx0 = Math.floor((121.3 - lon0) / res), bx1 = Math.ceil((122.0 - lon0) / res);
-        const by0 = Math.floor((24.6 - lat0) / res), by1 = Math.ceil((25.3 - lat0) / res);
-        const t4 = Date.now();
-        return json({
-          grid: { lon0, lat0, res, nx, ny, total: nx * ny, datetime: info.DateTime },
-          timing_ms: { fetch_parse_json: t1 - t0, get_body: t2 - t1, split: t3 - t2, lookup: t4 - t3, total: t4 - t0 },
-          values_len: vals.length,
-          points: PTS,
-          shuangbei_box: { x: [bx0, bx1], y: [by0, by1], cols: bx1 - bx0 + 1, rows: by1 - by0 + 1, cells: (bx1 - bx0 + 1) * (by1 - by0 + 1) }
-        });
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
-    // 除錯：校準 QPF 格點方向（找出正確取格公式）
-    if (url.pathname === "/qpfcal") {
-      const key = (env.CWA_KEY || "").trim();
-      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
-      try {
-        const t0 = Date.now();
-        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
-        const info = raw.cwaopendata.dataset.datasetInfo.parameterSet;
-        const lon0 = +info.StartPointLongitude, lat0 = +info.StartPointLatitude;
-        const res = +info.GridResolution, nx = +info.GridDimensionX, ny = +info.GridDimensionY;
-        let body = raw.cwaopendata.dataset.contents.content;
-        if (typeof body !== "string") body = body["#text"] || body._ || "";
-        const vals = body.split(",").map(Number);
-        // 掃有效格（非 -99）統計 ix/iy 範圍（兩種主序假設下）
-        let valid = 0, mn = 1e9, mx = -1e9;
-        let ixmin = 1e9, ixmax = -1, iymin = 1e9, iymax = -1;
-        for (let k = 0; k < vals.length; k++) {
-          const v = vals[k];
-          if (v > -98) { valid++; if (v < mn) mn = v; if (v > mx) mx = v;
-            const ix = k % nx, iy = Math.floor(k / nx);
-            if (ix < ixmin) ixmin = ix; if (ix > ixmax) ixmax = ix;
-            if (iy < iymin) iymin = iy; if (iy > iymax) iymax = iy; }
-        }
-        // 四種候選公式取 A/B/C
-        const cand = (lat, lng) => {
-          const fx = (lng - lon0) / res, fyS = (lat - lat0) / res, fyN = (ny - 1) - fyS;
-          const ix = Math.round(fx), iyS = Math.round(fyS), iyN = Math.round(fyN);
-          const g = (a, b, major) => major === "row" ? b * nx + a : a * ny + b;
-          return {
-            row_Ysouth: vals[g(ix, iyS, "row")], row_Ynorth: vals[g(ix, iyN, "row")],
-            col_Ysouth: vals[g(ix, iyS, "col")], col_Ynorth: vals[g(ix, iyN, "col")]
-          };
-        };
-        const PTS = CONFIG.points.map(p => ({ id: p.id, area: p.area, cand: cand(p.lat, p.lng) }));
-        // 雙北子網格（row-major、Y north 假設）非 -99 統計
-        const bx0 = Math.floor((121.3 - lon0) / res), bx1 = Math.ceil((122.0 - lon0) / res);
-        const by0 = Math.floor((24.6 - lat0) / res), by1 = Math.ceil((25.3 - lat0) / res);
-        let sbValidS = 0, sbValidN = 0, sbMax = -99;
-        for (let iy = by0; iy <= by1; iy++) for (let ix = bx0; ix <= bx1; ix++) {
-          const vS = vals[iy * nx + ix], vN = vals[((ny - 1 - iy)) * nx + ix];
-          if (vS > -98) { sbValidS++; if (vS > sbMax) sbMax = vS; }
-          if (vN > -98) sbValidN++;
-        }
-        return json({
-          ms: Date.now() - t0, valid_cells: valid, valid_ratio: +(valid / vals.length).toFixed(3),
-          value_range: [mn, mx],
-          valid_ix_range: [ixmin, ixmax], valid_iy_range: [iymin, iymax],
-          points: PTS,
-          shuangbei: { box_x: [bx0, bx1], box_y: [by0, by1], valid_if_Ysouth: sbValidS, valid_if_Ynorth: sbValidN, max_mm: sbMax }
-        });
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
-    // 除錯：反查正確維度對應（讓有效格落在台灣本島）
-    if (url.pathname === "/qpffix") {
-      const key = (env.CWA_KEY || "").trim();
-      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
-      try {
-        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
-        const info = raw.cwaopendata.dataset.datasetInfo.parameterSet;
-        const lon0 = +info.StartPointLongitude, lat0 = +info.StartPointLatitude, res = +info.GridResolution;
-        const NX = +info.GridDimensionX, NY = +info.GridDimensionY;
-        let body = raw.cwaopendata.dataset.contents.content;
-        if (typeof body !== "string") body = body["#text"] || body._ || "";
-        const vals = body.split(",").map(Number);
-        // 把有效格的「線性 index」換算成經緯度，4 種假設，挑出落在台灣本島比例最高者
-        const island = (lo, la) => lo >= 119.5 && lo <= 122.2 && la >= 21.7 && la <= 25.4;
-        const models = {
-          // w=每列寬度, lonFast=經度是否為快變維
-          A_lonFast_W_NX: { w: NX, lonFast: true },   // k=iy*NX+ix, ix=經
-          B_lonFast_W_NY: { w: NY, lonFast: true },
-          C_latFast_W_NX: { w: NX, lonFast: false },  // k=ix*?+... 緯快變
-          D_latFast_W_NY: { w: NY, lonFast: false }
-        };
-        const score = {};
-        for (const name in models) {
-          const { w, lonFast } = models[name];
-          let hit = 0, tot = 0;
-          for (let k = 0; k < vals.length; k++) {
-            if (vals[k] <= -98) continue; tot++;
-            const a = k % w, b = Math.floor(k / w);   // a=沿列, b=列號
-            let lon, lat;
-            if (lonFast) { lon = lon0 + a * res; lat = lat0 + ((NY - 1) - b) * res; }
-            else { lat = lat0 + ((NY - 1) - a) * res; lon = lon0 + b * res; }
-            if (island(lon, lat)) hit++;
-          }
-          score[name] = { valid: tot, on_island: hit, ratio: tot ? +(hit / tot).toFixed(3) : 0 };
-        }
-        // 用得分最高的模型取 A/B/C
-        const best = Object.entries(score).sort((x, y) => y[1].on_island - x[1].on_island)[0][0];
-        const m = models[best];
-        const getv = (lat, lng) => {
-          const ix = Math.round((lng - lon0) / res), iyFromN = Math.round(((lat0 + (NY - 1) * res) - lat) / res);
-          let k;
-          if (m.lonFast) k = iyFromN * m.w + ix;
-          else { const iyN = Math.round(((lat0 + (NY - 1) * res) - lat) / res); k = ix * m.w + iyN; }
-          return { k, v: vals[k] };
-        };
-        const PTS = CONFIG.points.map(p => ({ id: p.id, area: p.area, ...getv(p.lat, p.lng) }));
-        return json({ NX, NY, lon0, lat0, res, best_model: best, score, points_using_best: PTS });
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
-    // 除錯：定案 layout + 判斷 -99 是沒雨還是定位錯
-    if (url.pathname === "/qpfll") {
-      const key = (env.CWA_KEY || "").trim();
-      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
-      try {
-        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
-        const inf = raw.cwaopendata.dataset.datasetInfo.parameterSet;
-        const lon0 = +inf.StartPointLongitude, lat0 = +inf.StartPointLatitude, res = +inf.GridResolution;
-        const NX = +inf.GridDimensionX, NY = +inf.GridDimensionY;
-        let body = raw.cwaopendata.dataset.contents.content;
-        if (typeof body !== "string") body = body["#text"] || body._ || "";
-        const vals = body.split(",").map(Number);
-        // 兩種 layout 的「線性index → 經緯度」反推
-        const inv = {
-          L1_lonFast: k => { const ix = k % NX, row = Math.floor(k / NX), iys = (NY - 1) - row; return [lon0 + ix * res, lat0 + iys * res]; },
-          L2_latFast: k => { const ix = Math.floor(k / NY), iyn = k % NY, iys = (NY - 1) - iyn; return [lon0 + ix * res, lat0 + iys * res]; }
-        };
-        const onIsland = (lo, la) => lo >= 119.8 && lo <= 122.2 && la >= 21.8 && la <= 25.4;
-        const bbox = {};
-        for (const name in inv) {
-          let loMin = 999, loMax = -999, laMin = 999, laMax = -999, isl = 0, tot = 0;
-          for (let k = 0; k < vals.length; k++) { if (vals[k] <= -98) continue; tot++;
-            const [lo, la] = inv[name](k);
-            if (lo < loMin) loMin = lo; if (lo > loMax) loMax = lo; if (la < laMin) laMin = la; if (la > laMax) laMax = la;
-            if (onIsland(lo, la)) isl++; }
-          bbox[name] = { lon: [+loMin.toFixed(2), +loMax.toFixed(2)], lat: [+laMin.toFixed(2), +laMax.toFixed(2)], on_island: isl, ratio: +(isl / tot).toFixed(3) };
-        }
-        // 正向 index（兩 layout），取 A/B/C 中心值 + 3x3 + 最近有效格
-        const fwd = {
-          L1_lonFast: (lat, lng) => { const ix = Math.round((lng - lon0) / res), iys = Math.round((lat - lat0) / res); return ((NY - 1) - iys) * NX + ix; },
-          L2_latFast: (lat, lng) => { const ix = Math.round((lng - lon0) / res), iys = Math.round((lat - lat0) / res); return ix * NY + ((NY - 1) - iys); }
-        };
-        const winner = bbox.L1_lonFast.on_island >= bbox.L2_latFast.on_island ? "L1_lonFast" : "L2_latFast";
-        const f = fwd[winner];
-        const pts = CONFIG.points.map(p => {
-          const ix = Math.round((p.lng - lon0) / res), iys = Math.round((p.lat - lat0) / res);
-          let n3 = [];
-          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-            const k = winner === "L1_lonFast" ? ((NY - 1) - (iys + dy)) * NX + (ix + dx) : (ix + dx) * NY + ((NY - 1) - (iys + dy));
-            n3.push(vals[k]);
-          }
-          // 最近有效格（在 ±20 格內找）
-          let near = null, nd = 1e9;
-          for (let dy = -20; dy <= 20; dy++) for (let dx = -20; dx <= 20; dx++) {
-            const k = winner === "L1_lonFast" ? ((NY - 1) - (iys + dy)) * NX + (ix + dx) : (ix + dx) * NY + ((NY - 1) - (iys + dy));
-            if (vals[k] > -98) { const d = Math.hypot(dx, dy); if (d < nd) { nd = d; near = { v: vals[k], cells: +d.toFixed(1), km: +(d * res * 111).toFixed(1) }; } }
-          }
-          return { id: p.id, area: p.area, center: vals[f(p.lat, p.lng)], n3, nearest_valid: near };
-        });
-        return json({ NX, NY, bbox, winner, points: pts });
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
-    // 除錯：純網格座標分佈（不假設方向），反推真實原點/掃描
-    if (url.pathname === "/qpfgrid") {
-      const key = (env.CWA_KEY || "").trim();
-      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
-      try {
-        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
-        const inf = raw.cwaopendata.dataset.datasetInfo.parameterSet;
-        const NX = +inf.GridDimensionX, NY = +inf.GridDimensionY;
-        let body = raw.cwaopendata.dataset.contents.content;
-        if (typeof body !== "string") body = body["#text"] || body._ || "";
-        const vals = body.split(",").map(Number);
-        // 假設 k = iy*NX + ix（ix 快變，寬=NX=441）；統計有效格的 ix/iy 分佈
-        let ixMin = 1e9, ixMax = -1, iyMin = 1e9, iyMax = -1, n = 0;
-        const ixHist = {}, iyHist = {};        // 粗分箱（每 40 格一箱）
-        let sample = [];
-        for (let k = 0; k < vals.length; k++) {
-          if (vals[k] <= -98) continue; n++;
-          const ix = k % NX, iy = Math.floor(k / NX);
-          if (ix < ixMin) ixMin = ix; if (ix > ixMax) ixMax = ix;
-          if (iy < iyMin) iyMin = iy; if (iy > iyMax) iyMax = iy;
-          const bx = Math.floor(ix / 40) * 40, by = Math.floor(iy / 40) * 40;
-          ixHist[bx] = (ixHist[bx] || 0) + 1; iyHist[by] = (iyHist[by] || 0) + 1;
-          if (sample.length < 8 && vals[k] > 3) sample.push({ k, ix, iy, v: vals[k] });
-        }
-        // 同樣假設下，把有效格中心（取中位 ix/iy）換算成「若原點在四個角」各自的經緯度
-        const cix = Math.round((ixMin + ixMax) / 2), ciy = Math.round((iyMin + iyMax) / 2);
-        const res = +inf.GridResolution, L0 = +inf.StartPointLongitude, A0 = +inf.StartPointLatitude;
-        const corner = {
-          SW_lonByIx: [ +(L0 + cix * res).toFixed(2), +(A0 + ciy * res).toFixed(2) ],
-          NW_lonByIx: [ +(L0 + cix * res).toFixed(2), +(A0 + (NY - 1 - ciy) * res).toFixed(2) ],
-          SW_lonByIy: [ +(L0 + ciy * res).toFixed(2), +(A0 + cix * res).toFixed(2) ],
-          NW_lonByIy: [ +(L0 + ciy * res).toFixed(2), +(A0 + (NX - 1 - cix) * res).toFixed(2) ]
-        };
-        return json({ NX, NY, valid: n, ix_range: [ixMin, ixMax], iy_range: [iyMin, iyMax],
-          ix_center: cix, iy_center: ciy, ix_hist: ixHist, iy_hist: iyHist,
-          rain_samples: sample, center_as_corner: corner });
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
-    // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
 };
 
 async function refresh(env) {
-  const data = await buildData(env);
+  let qpf = null;
+  try { qpf = await refreshQpf(env); } catch (e) { qpf = null; }
+  const data = await buildData(env, qpf);
   await env.BUCKET.put("data.json", JSON.stringify(data), { httpMetadata: { contentType: "application/json" } });
 }
 
-async function buildData(env) {
-  try { return await buildLive(env); }
+async function buildData(env, qpf) {
+  try { return await buildLive(env, qpf); }
   catch (e) { return { ...DEMO, _source: "demo-fallback: " + String(e) }; }
 }
 
-// ── 現況 + 預報 ─────────────────────────────────────────────────
-async function buildLive(env) {
-  // 現況：雨量站（只抓設定好的站，CPU 安全）
+// ── 現況 + 預報 + QPF ───────────────────────────────────────────
+async function buildLive(env, qpf) {
+  if (qpf === undefined) qpf = await readQpf(env);
+
   const ids = CONFIG.points.map(p => p.station).filter(s => s && s !== "TODO");
   const params = (ids.length === CONFIG.points.length) ? { StationId: ids.join(",") } : {};
   const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY, { params }));
   if (!stations.length) throw new Error("no stations parsed");
   const byId = Object.fromEntries(stations.map(s => [s.id, s]));
+
   const points = CONFIG.points.map(p => {
     const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
-    return { id: p.id, name: p.name, area: p.area, lat: p.lat, lng: p.lng, mm_hr: st ? st.mm_hr : 0 };
+    return { id: p.id, name: p.name, area: p.area, lat: p.lat, lng: p.lng,
+             mm_hr: st ? st.mm_hr : 0, qpf_1h: qpfAt(qpf, p.lat, p.lng) };
   });
   const mmOf = Object.fromEntries(points.map(p => [p.id, p.mm_hr]));
   const countyOf = Object.fromEntries(CONFIG.points.map(p => [p.id, p.county]));
 
-  // 預報：縣市逐3小時 PoP（失敗不影響現況）
   let fc = {};
   try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); }
-  catch (e) { fc = { _err: String(e) }; }
+  catch (e) { fc = {}; }
   points.forEach(pt => { pt.plan = fc[countyOf[pt.id]] || []; });
 
   const d8 = new Date(Date.now() + 8 * 3600 * 1000);
@@ -422,13 +103,101 @@ async function buildLive(env) {
   return {
     updated_local: d8.toISOString().slice(0, 16).replace("T", " "),
     source_age_min: obs ? Math.max(0, Math.round((Date.now() - Date.parse(obs)) / 60000)) : 0,
-    mode: "shadow", _source: "live", _fc: Object.keys(fc).length,
+    mode: "shadow", _source: "live", qpf_time: qpf ? qpf.datetime : null,
     day_window: CONFIG.day_window || [6, 24],
     points, paths
   };
 }
 
-// 抓全台縣市逐3小時預報 → { 縣市名: [{from,to,pop,mm_hr}] }（只今天、day_window、PoP>=30）
+// ── QPF：cron 抓整包、抽 qpf_box 內有雨格寫 R2；公式 k=iy*NX+ix（ix=經 iy=緯由南）
+async function refreshQpf(env) {
+  const key = (env.CWA_KEY || "").trim();
+  const raw = await (await fetch(`https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`,
+    { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
+  const inf = raw.cwaopendata.dataset.datasetInfo.parameterSet;
+  const lon0 = +inf.StartPointLongitude, lat0 = +inf.StartPointLatitude, res = +inf.GridResolution;
+  const NX = +inf.GridDimensionX, NY = +inf.GridDimensionY;
+  let body = raw.cwaopendata.dataset.contents.content;
+  if (typeof body !== "string") body = body["#text"] || body._ || "";
+  const vals = body.split(",");
+  const box = CONFIG.qpf_box || { lon: [119.8, 122.1], lat: [21.8, 25.4] };
+  const ix0 = Math.max(0, Math.floor((box.lon[0] - lon0) / res)), ix1 = Math.min(NX - 1, Math.ceil((box.lon[1] - lon0) / res));
+  const iy0 = Math.max(0, Math.floor((box.lat[0] - lat0) / res)), iy1 = Math.min(NY - 1, Math.ceil((box.lat[1] - lat0) / res));
+  const cells = [];
+  for (let iy = iy0; iy <= iy1; iy++) for (let ix = ix0; ix <= ix1; ix++) {
+    const v = +vals[iy * NX + ix];
+    if (v > 0) cells.push({ lat: +(lat0 + iy * res).toFixed(4), lng: +(lon0 + ix * res).toFixed(4), mm: v });
+  }
+  const out = { datetime: inf.DateTime, res, box, cells };
+  await env.BUCKET.put("qpf.json", JSON.stringify(out), { httpMetadata: { contentType: "application/json" } });
+  return out;
+}
+async function readQpf(env) {
+  try { const o = await env.BUCKET.get("qpf.json"); return o ? JSON.parse(await o.text()) : null; }
+  catch (e) { return null; }
+}
+// 取某點未來1小時 QPF（mm）：取附近 ~1.5 格內最大雨格；qpf 載入但附近無雨格回 0；未載入回 null
+function qpfAt(qpf, lat, lng) {
+  if (!qpf || !qpf.cells) return null;
+  const r = (qpf.res || 0.0125) * 1.5;
+  let best = 0;
+  for (const c of qpf.cells) {
+    if (Math.abs(c.lat - lat) <= r && Math.abs(c.lng - lng) <= r && c.mm > best) best = c.mm;
+  }
+  return best;
+}
+
+// ── O-A0002-001 雨量站 ──────────────────────────────────────────
+function extractStations(raw) {
+  const recs = raw && raw.records || {};
+  const arr = recs.Station || recs.station || recs.location || [];
+  const out = [];
+  for (const s of arr) {
+    const c = getWGS84(s);
+    if (!c) continue;
+    out.push({ name: s.StationName || s.locationName || s.StationId, id: s.StationId,
+               lat: c.lat, lng: c.lng, mm_hr: getRainRate(s), obsTime: getObsTime(s),
+               county: (s.GeoInfo && s.GeoInfo.CountyName) || s.CountyName || null });
+  }
+  return out;
+}
+function getWGS84(s) {
+  const gi = s.GeoInfo;
+  if (gi && gi.Coordinates) {
+    const c = gi.Coordinates.find(x => x.CoordinateName === "WGS84") || gi.Coordinates[0];
+    const lat = +c.StationLatitude, lng = +c.StationLongitude;
+    if (isFinite(lat) && isFinite(lng)) return { lat, lng };
+  }
+  const lat = +(s.StationLatitude ?? s.lat), lng = +(s.StationLongitude ?? s.lon);
+  if (isFinite(lat) && isFinite(lng)) return { lat, lng };
+  return null;
+}
+function vnum(v) { const n = +v; return isFinite(n) && n >= 0 ? n : null; }
+function getRainRate(s) {
+  const re = s.RainfallElement || s.rainfallElement;
+  if (re) {
+    const p1 = vnum(re.Past1hr && re.Past1hr.Precipitation);
+    if (p1 != null) return p1;
+    const p10 = vnum((re.Past10Min || re.Past10min || {}).Precipitation);
+    if (p10 != null) return +(p10 * 6).toFixed(1);
+    const now = vnum(re.Now && re.Now.Precipitation);
+    if (now != null) return now;
+  }
+  return 0;
+}
+function getObsTime(s) { return (s.ObsTime && s.ObsTime.DateTime) || s.obsTime || null; }
+function nearestStation(stations, lat, lng) {
+  let best = null, bd = Infinity;
+  for (const s of stations) { const d = haversine(lat, lng, s.lat, s.lng); if (d < bd) { bd = d; best = s; } }
+  return best;
+}
+function haversine(la1, lo1, la2, lo2) {
+  const R = 6371, dLa = (la2 - la1) * Math.PI / 180, dLo = (lo2 - lo1) * Math.PI / 180;
+  const a = Math.sin(dLa / 2) ** 2 + Math.cos(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) * Math.sin(dLo / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// ── F-D0047-089 全台縣市逐3小時預報 ─────────────────────────────
 async function fetchForecastAll(key, dayWin) {
   const [w0, w1] = dayWin;
   const raw = await cwaFetch("F-D0047-089", key, { params: { ElementName: "3小時降雨機率,天氣現象" } });
@@ -473,7 +242,6 @@ function wxToMm(wx, pop) {
   if (/陣雨|短暫雨|雨/.test(wx)) return 3;
   if (pop >= 70) return 8; if (pop >= 50) return 4; if (pop >= 30) return 2; return 0;
 }
-// 合併兩端縣市的雨窗：同時段取較大者
 function mergeBlocks(a, b) {
   const m = {};
   for (const blk of [...(a || []), ...(b || [])]) {
@@ -482,57 +250,6 @@ function mergeBlocks(a, b) {
     else if (blk.mm_hr > m[k].mm_hr) m[k].mm_hr = blk.mm_hr;
   }
   return Object.values(m).sort((x, y) => x.from - y.from);
-}
-
-// ── 解析 O-A0002-001（防多版 schema）────────────────────────────
-function extractStations(raw) {
-  const recs = raw && raw.records || {};
-  const arr = recs.Station || recs.station || recs.location || [];
-  const out = [];
-  for (const s of arr) {
-    const c = getWGS84(s);
-    if (!c) continue;
-    out.push({ name: s.StationName || s.locationName || s.StationId, id: s.StationId,
-               lat: c.lat, lng: c.lng, mm_hr: getRainRate(s), obsTime: getObsTime(s),
-               county: (s.GeoInfo && s.GeoInfo.CountyName) || s.CountyName || null });
-  }
-  return out;
-}
-function getWGS84(s) {
-  const gi = s.GeoInfo;
-  if (gi && gi.Coordinates) {
-    const c = gi.Coordinates.find(x => x.CoordinateName === "WGS84") || gi.Coordinates[0];
-    const lat = +c.StationLatitude, lng = +c.StationLongitude;
-    if (isFinite(lat) && isFinite(lng)) return { lat, lng };
-  }
-  const lat = +(s.StationLatitude ?? s.lat), lng = +(s.StationLongitude ?? s.lon);
-  if (isFinite(lat) && isFinite(lng)) return { lat, lng };
-  return null;
-}
-function vnum(v) { const n = +v; return isFinite(n) && n >= 0 ? n : null; } // -99/-990/T/X → null
-function getRainRate(s) {
-  const re = s.RainfallElement || s.rainfallElement;
-  if (re) {
-    const p1 = vnum(re.Past1hr && re.Past1hr.Precipitation);
-    if (p1 != null) return p1;                                   // 過去1小時 mm ≈ mm/hr
-    const p10 = vnum((re.Past10Min || re.Past10min || {}).Precipitation);
-    if (p10 != null) return +(p10 * 6).toFixed(1);               // 10分 × 6
-    const now = vnum(re.Now && re.Now.Precipitation);
-    if (now != null) return now;
-  }
-  return 0;
-}
-function getObsTime(s) { return (s.ObsTime && s.ObsTime.DateTime) || s.obsTime || null; }
-
-function nearestStation(stations, lat, lng) {
-  let best = null, bd = Infinity;
-  for (const s of stations) { const d = haversine(lat, lng, s.lat, s.lng); if (d < bd) { bd = d; best = s; } }
-  return best;
-}
-function haversine(la1, lo1, la2, lo2) {
-  const R = 6371, dLa = (la2 - la1) * Math.PI / 180, dLo = (lo2 - lo1) * Math.PI / 180;
-  const a = Math.sin(dLa / 2) ** 2 + Math.cos(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) * Math.sin(dLo / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
 }
 
 async function cwaFetch(dataId, key, { fileapi = false, format = "JSON", params = {} } = {}) {
@@ -548,22 +265,16 @@ async function cwaFetch(dataId, key, { fileapi = false, format = "JSON", params 
 }
 
 const DEMO = {
-  updated_local: "2026-06-17 11:48", source_age_min: 2, mode: "shadow", day_window: [6, 24],
+  updated_local: "2026-06-18 13:40", source_age_min: 3, mode: "shadow", day_window: [6, 24],
   points: [
-    { id: "A", name: "遠東世紀廣場", area: "中和", mm_hr: 0 },
-    { id: "B", name: "頂溪站", area: "永和", mm_hr: 1.2 },
-    { id: "C", name: "瑞光智慧社區", area: "內湖", mm_hr: 14 }
+    { id: "A", name: "中和", area: "中和", lat: 24.9977, lng: 121.4855, mm_hr: 0, qpf_1h: null, plan: [{ from: 15, to: 18, pop: 80, mm_hr: 8 }] },
+    { id: "B", name: "永和", area: "永和", lat: 25.0138, lng: 121.5155, mm_hr: 0, qpf_1h: null, plan: [{ from: 15, to: 18, pop: 80, mm_hr: 8 }] },
+    { id: "C", name: "內湖", area: "內湖", lat: 25.0732, lng: 121.5789, mm_hr: 6.5, qpf_1h: null, plan: [{ from: 12, to: 15, pop: 90, mm_hr: 12 }] }
   ],
   paths: [
-    { id: "B-A", from: "B", to: "A", tag: "上班", status: "clear",
-      plan: { state: "forecast", note: "預報 15–18 時有雨 · 實況尚早", blocks: [{ from: 15, to: 18, mm_hr: 5, pop: 60 }] } },
-    { id: "B-C", from: "B", to: "C", tag: "上班", status: "rain_ahead",
-      eta_min: 18, segment: "內湖段", peak_mm_hr: 6, window_min: [18, 38], confidence: "中",
-      plan: { state: "forming", note: "預報 12–15 時 · 實況成形中", blocks: [{ from: 12, to: 15, mm_hr: 8, pop: 70 }] } },
-    { id: "A-B", from: "A", to: "B", tag: "下班", status: "clear",
-      plan: { state: "cleared", note: "今日無明顯降雨預報", blocks: [] } },
-    { id: "C-B", from: "C", to: "B", tag: "下班", status: "raining_now",
-      segment: "內科起點", peak_mm_hr: 14, window_min: [0, 25], confidence: "高",
-      plan: { state: "confirmed", note: "預報 12:00 · 實況提前 12 分（11:48 已下）", blocks: [{ from: 12, to: 15, mm_hr: 12, pop: 80 }] } }
+    { id: "B-A", from: "B", to: "A", tag: "上班", status: "clear", plan: { state: "forecast", blocks: [{ from: 15, to: 18, mm_hr: 8, pop: 80 }] } },
+    { id: "B-C", from: "B", to: "C", tag: "上班", status: "raining_now", peak_mm_hr: 6.5, plan: { state: "confirmed", blocks: [{ from: 12, to: 15, mm_hr: 12, pop: 90 }] } },
+    { id: "A-B", from: "A", to: "B", tag: "下班", status: "clear", plan: { state: "cleared", blocks: [] } },
+    { id: "C-B", from: "C", to: "B", tag: "下班", status: "raining_now", peak_mm_hr: 6.5, plan: { state: "confirmed", blocks: [{ from: 12, to: 15, mm_hr: 12, pop: 90 }] } }
   ]
 };
