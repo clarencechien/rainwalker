@@ -102,6 +102,34 @@ export default {
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
+    // 除錯：探 QPF 格點 F-B0046（看格式/大小，決定能不能接）
+    if (url.pathname === "/qpf") {
+      const ds = url.searchParams.get("ds") || "F-B0046-001";
+      const api = url.searchParams.get("api") || "fileapi";
+      const key = (env.CWA_KEY || "").trim();
+      const base = api === "datastore"
+        ? `https://opendata.cwa.gov.tw/api/v1/rest/datastore/${ds}`
+        : `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/${ds}`;
+      try {
+        const r = await fetch(`${base}?Authorization=${key}&format=JSON`, { headers: { accept: "*/*", "user-agent": "rainwalker" } });
+        const buf = new Uint8Array(await r.arrayBuffer());
+        const n = buf.length;
+        const hex = Array.from(buf.slice(0, 4)).map(b => b.toString(16).padStart(2, "0")).join(" ");
+        const a = String.fromCharCode(...buf.slice(0, 8));
+        let fmt = "unknown";
+        if (a.startsWith("GRIB")) fmt = "GRIB";
+        else if (buf[0] === 0x1f && buf[1] === 0x8b) fmt = "gzip";
+        else if (a.startsWith("PK")) fmt = "zip/KMZ";
+        else if (a.replace(/^\s+/, "").startsWith("{") || a.replace(/^\s+/, "").startsWith("[")) fmt = "JSON";
+        else if (a.replace(/^\s+/, "").startsWith("<")) fmt = "XML";
+        const preview = (fmt === "JSON" || fmt === "XML" || fmt === "unknown")
+          ? new TextDecoder().decode(buf.slice(0, 800)) : "(binary)";
+        return json({ ds, api, status: r.status, content_type: r.headers.get("content-type"),
+          content_length: r.headers.get("content-length"), bytes: n, kb: +(n / 1024).toFixed(1),
+          magic_hex: hex, format_guess: fmt, preview });
+      } catch (e) { return json({ ds, api, error: String(e) }, 500); }
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
@@ -136,6 +164,7 @@ async function buildLive(env) {
   let fc = {};
   try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); }
   catch (e) { fc = { _err: String(e) }; }
+  points.forEach(pt => { pt.plan = fc[countyOf[pt.id]] || []; });
 
   const d8 = new Date(Date.now() + 8 * 3600 * 1000);
   const nowHr = d8.getHours() + d8.getMinutes() / 60;
