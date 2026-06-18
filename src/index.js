@@ -170,6 +170,59 @@ export default {
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
+    // 除錯：校準 QPF 格點方向（找出正確取格公式）
+    if (url.pathname === "/qpfcal") {
+      const key = (env.CWA_KEY || "").trim();
+      const u = `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`;
+      try {
+        const t0 = Date.now();
+        const raw = await (await fetch(u, { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
+        const info = raw.cwaopendata.dataset.datasetInfo.parameterSet;
+        const lon0 = +info.StartPointLongitude, lat0 = +info.StartPointLatitude;
+        const res = +info.GridResolution, nx = +info.GridDimensionX, ny = +info.GridDimensionY;
+        let body = raw.cwaopendata.dataset.contents.content;
+        if (typeof body !== "string") body = body["#text"] || body._ || "";
+        const vals = body.split(",").map(Number);
+        // 掃有效格（非 -99）統計 ix/iy 範圍（兩種主序假設下）
+        let valid = 0, mn = 1e9, mx = -1e9;
+        let ixmin = 1e9, ixmax = -1, iymin = 1e9, iymax = -1;
+        for (let k = 0; k < vals.length; k++) {
+          const v = vals[k];
+          if (v > -98) { valid++; if (v < mn) mn = v; if (v > mx) mx = v;
+            const ix = k % nx, iy = Math.floor(k / nx);
+            if (ix < ixmin) ixmin = ix; if (ix > ixmax) ixmax = ix;
+            if (iy < iymin) iymin = iy; if (iy > iymax) iymax = iy; }
+        }
+        // 四種候選公式取 A/B/C
+        const cand = (lat, lng) => {
+          const fx = (lng - lon0) / res, fyS = (lat - lat0) / res, fyN = (ny - 1) - fyS;
+          const ix = Math.round(fx), iyS = Math.round(fyS), iyN = Math.round(fyN);
+          const g = (a, b, major) => major === "row" ? b * nx + a : a * ny + b;
+          return {
+            row_Ysouth: vals[g(ix, iyS, "row")], row_Ynorth: vals[g(ix, iyN, "row")],
+            col_Ysouth: vals[g(ix, iyS, "col")], col_Ynorth: vals[g(ix, iyN, "col")]
+          };
+        };
+        const PTS = CONFIG.points.map(p => ({ id: p.id, area: p.area, cand: cand(p.lat, p.lng) }));
+        // 雙北子網格（row-major、Y north 假設）非 -99 統計
+        const bx0 = Math.floor((121.3 - lon0) / res), bx1 = Math.ceil((122.0 - lon0) / res);
+        const by0 = Math.floor((24.6 - lat0) / res), by1 = Math.ceil((25.3 - lat0) / res);
+        let sbValidS = 0, sbValidN = 0, sbMax = -99;
+        for (let iy = by0; iy <= by1; iy++) for (let ix = bx0; ix <= bx1; ix++) {
+          const vS = vals[iy * nx + ix], vN = vals[((ny - 1 - iy)) * nx + ix];
+          if (vS > -98) { sbValidS++; if (vS > sbMax) sbMax = vS; }
+          if (vN > -98) sbValidN++;
+        }
+        return json({
+          ms: Date.now() - t0, valid_cells: valid, valid_ratio: +(valid / vals.length).toFixed(3),
+          value_range: [mn, mx],
+          valid_ix_range: [ixmin, ixmax], valid_iy_range: [iymin, iymax],
+          points: PTS,
+          shuangbei: { box_x: [bx0, bx1], box_y: [by0, by1], valid_if_Ysouth: sbValidS, valid_if_Ynorth: sbValidN, max_mm: sbMax }
+        });
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
     // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
