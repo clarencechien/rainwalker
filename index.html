@@ -99,6 +99,25 @@
 
   footer{margin-top:22px;font-size:11px;color:var(--dim);line-height:1.6;text-align:center}
   .err{color:var(--i4);font-size:13px;margin-top:12px;text-align:center}
+  /* tappable points + detail overlay */
+  .pp{cursor:pointer}
+  .pp:active{border-color:var(--sky)}
+  .detail{position:fixed;inset:0;background:rgba(8,12,20,.72);backdrop-filter:blur(3px);z-index:50;display:flex;align-items:flex-end;justify-content:center}
+  .dpanel{background:var(--bg2);border:1px solid var(--line);border-radius:18px 18px 0 0;width:100%;max-width:480px;max-height:88vh;overflow:auto;padding:18px 16px 30px}
+  .dhead{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px}
+  .dttl{font-size:20px;font-weight:800}
+  .dsub{font-size:12px;color:var(--dim);margin-top:3px}
+  .dclose{background:var(--card);border:1px solid var(--line);color:var(--muted);border-radius:9px;width:34px;height:34px;font-size:15px;cursor:pointer;flex:none}
+  .dlabel{font-size:12px;color:var(--dim);margin:18px 0 8px;font-weight:700}
+  .dlist{display:flex;flex-direction:column;gap:7px}
+  .drow{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:11px;padding:11px 13px}
+  .drow .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .dname{flex:1;font-size:14px;font-weight:600}
+  .ddist{font-size:11px;color:var(--dim);margin-left:7px;font-weight:400}
+  .dlv{font-size:13px;font-weight:700;white-space:nowrap}
+  .dnote{font-size:11px;color:var(--dim);margin-top:16px;line-height:1.5}
+  .dloading{padding:34px 0;text-align:center;color:var(--muted)}
+  .dempty{color:var(--dim);font-size:13px;padding:8px}
 </style>
 </head>
 <body>
@@ -117,12 +136,13 @@
 
   <footer id="footer"></footer>
 </div>
+<div id="detail" class="detail" hidden onclick="if(event.target===this)closeDetail()"></div>
 
 <script>
 /* 部署後把這行改成你的 Worker 網址（含 CORS），例如：
    const DATA_URL = "https://rain-on-route.你的子網域.workers.dev/";
    本機預覽或還沒部署就留 "data.json"，會 fallback 到內嵌示範資料。 */
-const DATA_URL = "https://rainwalker.sw-tech.workers.dev/";
+const DATA_URL = "/data.json";
 function nowStr(){return new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false});}
 
 /* data.json 契約：
@@ -175,16 +195,20 @@ function hint(t){
   return "整段乾爽，安心出門";
 }
 
-let DATA=null, sel=0;
+let DATA=null, sel=0, HERE=null;
 
+function ppCard(label,k,onclick){
+  return `<div class="pp" onclick="${onclick}">
+    <span class="dot" style="background:${k.t?k.c:'var(--dim)'}"></span>
+    <div class="ar">${label}</div>
+    <div class="lv" style="color:${k.c}">${k.label}</div></div>`;
+}
 function renderPoints(d){
-  document.getElementById("points").innerHTML = d.points.map(p=>{
-    const k=classify(p.mm_hr);
-    return `<div class="pp">
-      <span class="dot" style="background:${k.t?k.c:'var(--dim)'}"></span>
-      <div class="ar">${p.area}</div>
-      <div class="lv" style="color:${k.c}">${k.label}</div></div>`;
-  }).join("");
+  let html="";
+  if(HERE){ const hk=classify(HERE.here?HERE.here.mm_hr:null);
+    html+=ppCard("所在地",hk,`openDetailLL(${HERE.lat},${HERE.lng},'所在地')`); }
+  html+=d.points.map(p=>ppCard(p.area,classify(p.mm_hr),`openPoint('${p.id}')`)).join("");
+  document.getElementById("points").innerHTML=html;
 }
 function renderTabs(d){
   const area={}; d.points.forEach(pt=>area[pt.id]=pt.area);
@@ -271,6 +295,57 @@ function renderCard(d){
 }
 function pick(i){ sel=i; renderTabs(DATA); renderCard(DATA); }
 
+function openPoint(id){ const p=(DATA.points||[]).find(x=>x.id===id); if(p) openDetailLL(p.lat,p.lng,p.area); }
+async function openDetailLL(lat,lng,label){
+  const el=document.getElementById("detail");
+  el.innerHTML=`<div class="dpanel"><div class="dhead"><div class="dttl">${label}</div>`+
+    `<button class="dclose" onclick="closeDetail()">✕</button></div><div class="dloading">載入中…</div></div>`;
+  el.hidden=false;
+  try{
+    const at=await (await fetch(`/at?lat=${lat}&lng=${lng}&n=8`,{cache:"no-store"})).json();
+    if(at.error) throw at.error;
+    renderDetail(label,at);
+  }catch(e){
+    el.innerHTML=`<div class="dpanel"><div class="dhead"><div class="dttl">${label}</div>`+
+      `<button class="dclose" onclick="closeDetail()">✕</button></div><div class="dloading">讀取失敗：${e}</div></div>`;
+  }
+}
+function renderDetail(label,at){
+  const now=new Date(), nowHr=now.getHours()+now.getMinutes()/60;
+  const dc=dayContext({blocks:at.plan||[]},at.day_window,nowHr);
+  const cty=at.here&&at.here.county?at.here.county:"本區";
+  const rows=(at.nearby||[]).map(s=>{
+    const k=classify(s.mm_hr);
+    return `<div class="drow"><span class="dot" style="background:${k.t?k.c:'var(--dim)'}"></span>`+
+      `<div class="dname">${s.name}<span class="ddist">${s.dist_km}km</span></div>`+
+      `<div class="dlv" style="color:${k.c}">${k.label}${s.mm_hr>0?` · ${s.mm_hr}`:''}</div></div>`;
+  }).join("");
+  document.getElementById("detail").innerHTML=
+    `<div class="dpanel">
+      <div class="dhead">
+        <div><div class="dttl">${label}</div><div class="dsub">${cty}${at.here?' · 最近站 '+at.here.name:''}</div></div>
+        <button class="dclose" onclick="closeDetail()">✕</button>
+      </div>
+      <div class="dlabel">今日預報（${cty}逐3小時）</div>
+      ${dc.html}
+      <div class="dlabel">附近測站現況（mm/hr）</div>
+      <div class="dlist">${rows||'<div class="dempty">附近無測站資料</div>'}</div>
+      <div class="dnote">預報為縣市級，同縣市共用；現況為各站實測，逐站不同。</div>
+    </div>`;
+  document.getElementById("detail").hidden=false;
+}
+function closeDetail(){ document.getElementById("detail").hidden=true; }
+function initGeo(){
+  if(!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const lat=pos.coords.latitude, lng=pos.coords.longitude;
+    try{
+      const at=await (await fetch(`/at?lat=${lat}&lng=${lng}&n=8`,{cache:"no-store"})).json();
+      if(at&&!at.error){ HERE={lat,lng,here:at.here}; if(DATA) renderPoints(DATA); }
+    }catch(e){}
+  },()=>{},{timeout:8000,maximumAge:300000});
+}
+
 function render(d){
   DATA=d;
   document.getElementById("clock").textContent=nowStr();
@@ -293,6 +368,7 @@ function render(d){
     const r=await fetch(DATA_URL,{cache:"no-store"});
     if(!r.ok) throw 0;
     render(await r.json());
+    initGeo();
   }catch(e){
     render(MOCK);
     document.getElementById("footer").innerHTML+=
