@@ -11,7 +11,8 @@
       "lat": 24.9977,
       "lng": 121.4855,
       "station": "C0AG80",
-      "township": "新北市中和區"
+      "township": "新北市中和區",
+      "county": "新北市"
     },
     {
       "id": "B",
@@ -20,7 +21,8 @@
       "lat": 25.0138,
       "lng": 121.5155,
       "station": "C0AH10",
-      "township": "新北市永和區"
+      "township": "新北市永和區",
+      "county": "新北市"
     },
     {
       "id": "C",
@@ -29,7 +31,8 @@
       "lat": 25.0732,
       "lng": 121.5789,
       "station": "C0A9F0",
-      "township": "臺北市內湖區"
+      "township": "臺北市內湖區",
+      "county": "臺北市"
     }
   ],
   "paths": [

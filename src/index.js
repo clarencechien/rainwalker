@@ -97,42 +97,112 @@ async function buildData(env) {
   catch (e) { return { ...DEMO, _source: "demo-fallback: " + String(e) }; }
 }
 
-// ── 現況層（真資料）─────────────────────────────────────────────
+// ── 現況 + 預報 ─────────────────────────────────────────────────
 async function buildLive(env) {
-  // 已知 station id 就只抓那幾站（payload 從 ~1300 站縮到 3 站，CPU 安全）
+  // 現況：雨量站（只抓設定好的站，CPU 安全）
   const ids = CONFIG.points.map(p => p.station).filter(s => s && s !== "TODO");
   const params = (ids.length === CONFIG.points.length) ? { StationId: ids.join(",") } : {};
   const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY, { params }));
   if (!stations.length) throw new Error("no stations parsed");
   const byId = Object.fromEntries(stations.map(s => [s.id, s]));
-
   const points = CONFIG.points.map(p => {
     const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
     return { id: p.id, name: p.name, area: p.area, mm_hr: st ? st.mm_hr : 0 };
   });
   const mmOf = Object.fromEntries(points.map(p => [p.id, p.mm_hr]));
+  const countyOf = Object.fromEntries(CONFIG.points.map(p => [p.id, p.county]));
 
-  // v1 路徑狀態：純由兩端現況推（之後再換成沿走廊的臨近預報）
+  // 預報：縣市逐3小時 PoP（失敗不影響現況）
+  let fc = {};
+  try { fc = await fetchForecast(env.CWA_KEY, CONFIG.day_window || [6, 24]); }
+  catch (e) { fc = { _err: String(e) }; }
+
+  const d8 = new Date(Date.now() + 8 * 3600 * 1000);
+  const nowHr = d8.getHours() + d8.getMinutes() / 60;
+
   const paths = CONFIG.paths.map(p => {
     const peak = Math.max(mmOf[p.from] || 0, mmOf[p.to] || 0);
     const raining = peak >= 0.2;
+    const blocks = mergeBlocks(fc[countyOf[p.from]], fc[countyOf[p.to]]);
+    const futureRain = blocks.some(b => b.to > nowHr);
+    const state = raining ? "confirmed" : (blocks.length ? (futureRain ? "forecast" : "cleared") : "cleared");
     return {
       id: p.id, from: p.from, to: p.to, tag: p.tag,
       status: raining ? "raining_now" : "clear",
       ...(raining ? { peak_mm_hr: peak, window_min: [0, 30] } : {}),
-      plan: { state: "forecast", blocks: [] }   // 預報層待接
+      plan: { state, blocks }
     };
   });
 
-  const now = new Date(Date.now() + 8 * 3600 * 1000);
-  const obs = stations.find(s => s.obsTime)?.obsTime || null;
+  const obs = stations.find(s => s.obsTime) ? stations.find(s => s.obsTime).obsTime : null;
   return {
-    updated_local: now.toISOString().slice(0, 16).replace("T", " "),
+    updated_local: d8.toISOString().slice(0, 16).replace("T", " "),
     source_age_min: obs ? Math.max(0, Math.round((Date.now() - Date.parse(obs)) / 60000)) : 0,
-    mode: "shadow", _source: "live",
+    mode: "shadow", _source: "live", _fc: Object.keys(fc),
     day_window: CONFIG.day_window || [6, 24],
     points, paths
   };
+}
+
+// 抓縣市逐3小時預報 → 每個縣市回 [{from,to,pop,mm_hr}]（只今天、day_window 內、PoP>=30）
+async function fetchForecast(key, dayWin) {
+  const [w0, w1] = dayWin;
+  const raw = await cwaFetch("F-D0047-089", key, { params: {
+    LocationName: "新北市,臺北市", ElementName: "3小時降雨機率,天氣現象"
+  }});
+  const found = findLocations(raw, ["新北市", "臺北市"]);
+  const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  const out = {};
+  for (const name in found) {
+    const pops = {}, wxs = {};
+    for (const el of (found[name].WeatherElement || [])) {
+      const isPop = /降雨機率|Probability/i.test(el.ElementName);
+      const isWx = /天氣現象/.test(el.ElementName);
+      for (const t of (el.Time || [])) {
+        const v = (t.ElementValue && t.ElementValue[0]) || {};
+        if (isPop) pops[t.StartTime] = { start: t.StartTime, end: t.EndTime, pop: +(v.ProbabilityOfPrecipitation ?? v.Value ?? -1) };
+        if (isWx) wxs[t.StartTime] = v.Weather || v.WeatherDescription || v.Value || "";
+      }
+    }
+    const blocks = [];
+    for (const k in pops) {
+      const b = pops[k];
+      if (!b.start.startsWith(today)) continue;
+      const from = hourOf(b.start), to = hourOf(b.end) || 24;
+      if (to <= w0 || from >= w1 || b.pop < 30) continue;
+      blocks.push({ from, to, pop: b.pop, mm_hr: wxToMm(wxs[k] || "", b.pop) });
+    }
+    out[name] = blocks.sort((a, b) => a.from - b.from);
+  }
+  return out;
+}
+
+// 遞迴找指定 LocationName 的節點（防多層巢狀）
+function findLocations(node, want, out = {}) {
+  if (!node || typeof node !== "object") return out;
+  if (Array.isArray(node)) { node.forEach(n => findLocations(n, want, out)); return out; }
+  if (node.LocationName && want.includes(node.LocationName) && node.WeatherElement) out[node.LocationName] = node;
+  if (node.Location) findLocations(node.Location, want, out);
+  if (node.Locations) findLocations(node.Locations, want, out);
+  return out;
+}
+function hourOf(iso) { const m = /T(\d{2}):/.exec(iso || ""); return m ? +m[1] : 0; }
+function wxToMm(wx, pop) {
+  if (/豪雨/.test(wx)) return 30;
+  if (/大雨/.test(wx)) return 15;
+  if (/雷/.test(wx)) return 8;
+  if (/陣雨|短暫雨|雨/.test(wx)) return 3;
+  if (pop >= 70) return 8; if (pop >= 50) return 4; if (pop >= 30) return 2; return 0;
+}
+// 合併兩端縣市的雨窗：同時段取較大者
+function mergeBlocks(a, b) {
+  const m = {};
+  for (const blk of [...(a || []), ...(b || [])]) {
+    const k = blk.from;
+    if (!m[k] || blk.pop > m[k].pop) m[k] = { ...blk };
+    else if (blk.mm_hr > m[k].mm_hr) m[k].mm_hr = blk.mm_hr;
+  }
+  return Object.values(m).sort((x, y) => x.from - y.from);
 }
 
 // ── 解析 O-A0002-001（防多版 schema）────────────────────────────
