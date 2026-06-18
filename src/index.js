@@ -4,29 +4,51 @@ const JSONH = { "content-type": "application/json; charset=utf-8" };
 const json = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: JSONH });
 
 export default {
-  // cron：抓 CWA、算完寫進 R2
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(refresh(env));
-  },
+  async scheduled(event, env, ctx) { ctx.waitUntil(refresh(env)); },
+
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 1) data.json：優先 R2，沒有就回即時算的（避免 R2 還沒綁/還沒寫時前端開天窗）
+    // data.json：優先 R2，沒有就即時算
     if (url.pathname === "/data.json") {
       try {
         const obj = await env.BUCKET.get("data.json");
         if (obj) return new Response(obj.body, { headers: { ...JSONH, "cache-control": "no-store" } });
-      } catch (e) { /* R2 未綁定或讀取失敗 → 落到下面回 DEMO */ }
+      } catch (e) {}
       return json(await buildData(env));
     }
 
-    // 2) 手動觸發一次（測試 R2 寫入）
+    // 手動觸發寫 R2
     if (url.pathname === "/refresh") {
       try { await refresh(env); return json({ ok: true, at: new Date().toISOString() }); }
       catch (e) { return json({ ok: false, error: String(e) }, 500); }
     }
 
-    // 3) 其餘 → 靜態資源（index.html 等）
+    // 除錯：每個點對到的最近雨量站 + 現在雨量 + 距離
+    if (url.pathname === "/nearest") {
+      try {
+        const st = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));
+        return json({ station_count: st.length, points: CONFIG.points.map(p => {
+          const n = nearestStation(st, p.lat, p.lng);
+          return { point: p.id, area: p.area,
+            station: n ? n.name : null, id: n ? n.id : null,
+            mm_hr: n ? n.mm_hr : null,
+            dist_km: n ? +haversine(p.lat, p.lng, n.lat, n.lng).toFixed(2) : null };
+        })});
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
+    // 除錯：原始結構（top keys + 站數 + 第一筆樣本）
+    if (url.pathname === "/probe") {
+      try {
+        const raw = await cwaFetch("O-A0002-001", env.CWA_KEY);
+        const recs = raw && raw.records || {};
+        const arr = recs.Station || recs.station || recs.location || [];
+        return json({ topKeys: Object.keys(recs), count: arr.length, sample: arr[0] || null });
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
+    // 其餘 → 靜態（index.html）
     return env.ASSETS.fetch(request);
   }
 };
@@ -34,21 +56,99 @@ export default {
 async function refresh(env) {
   const data = await buildData(env);
   await env.BUCKET.put("data.json", JSON.stringify(data), { httpMetadata: { contentType: "application/json" } });
-  // 之後可在這 append 一列到 D1 當 shadow log
 }
 
 async function buildData(env) {
-  // ── TODO(邊寫邊驗) 用 env.CWA_KEY 接真資料 ──────────────────────
-  // 1. 現況：cwaFetch("O-A0002-001", env.CWA_KEY) → 各 point 最近站 min_10 → mm/hr
-  // 2. 預報：cwaFetch("F-D0047-0xx", env.CWA_KEY) → 各 township Wx+PoP → plan.blocks
-  // 3. 臨近(粗)：cwaFetch("F-B0046-001", env.CWA_KEY, {fileapi:true}) → paths[].status
-  // 4. reconcile：plan vs 現況 → plan.state
-  // 現在先回 DEMO，讓整條鏈先通：
-  return DEMO;
+  try { return await buildLive(env); }
+  catch (e) { return { ...DEMO, _source: "demo-fallback: " + String(e) }; }
 }
 
-// CWA 取用 helper：datastore（查詢型 JSON）/ fileapi（檔案型，如閃電 KMZ）
+// ── 現況層（真資料）─────────────────────────────────────────────
+async function buildLive(env) {
+  const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));
+  if (!stations.length) throw new Error("no stations parsed");
+
+  const points = CONFIG.points.map(p => {
+    const n = nearestStation(stations, p.lat, p.lng);
+    return { id: p.id, name: p.name, area: p.area, mm_hr: n ? n.mm_hr : 0 };
+  });
+  const mmOf = Object.fromEntries(points.map(p => [p.id, p.mm_hr]));
+
+  // v1 路徑狀態：純由兩端現況推（之後再換成沿走廊的臨近預報）
+  const paths = CONFIG.paths.map(p => {
+    const peak = Math.max(mmOf[p.from] || 0, mmOf[p.to] || 0);
+    const raining = peak >= 0.2;
+    return {
+      id: p.id, from: p.from, to: p.to, tag: p.tag,
+      status: raining ? "raining_now" : "clear",
+      ...(raining ? { peak_mm_hr: peak, window_min: [0, 30] } : {}),
+      plan: { state: "forecast", blocks: [] }   // 預報層待接
+    };
+  });
+
+  const now = new Date(Date.now() + 8 * 3600 * 1000);
+  const obs = stations.find(s => s.obsTime)?.obsTime || null;
+  return {
+    updated_local: now.toISOString().slice(0, 16).replace("T", " "),
+    source_age_min: obs ? Math.max(0, Math.round((Date.now() - Date.parse(obs)) / 60000)) : 0,
+    mode: "shadow", _source: "live",
+    day_window: CONFIG.day_window || [6, 24],
+    points, paths
+  };
+}
+
+// ── 解析 O-A0002-001（防多版 schema）────────────────────────────
+function extractStations(raw) {
+  const recs = raw && raw.records || {};
+  const arr = recs.Station || recs.station || recs.location || [];
+  const out = [];
+  for (const s of arr) {
+    const c = getWGS84(s);
+    if (!c) continue;
+    out.push({ name: s.StationName || s.locationName || s.StationId, id: s.StationId,
+               lat: c.lat, lng: c.lng, mm_hr: getRainRate(s), obsTime: getObsTime(s) });
+  }
+  return out;
+}
+function getWGS84(s) {
+  const gi = s.GeoInfo;
+  if (gi && gi.Coordinates) {
+    const c = gi.Coordinates.find(x => x.CoordinateName === "WGS84") || gi.Coordinates[0];
+    const lat = +c.StationLatitude, lng = +c.StationLongitude;
+    if (isFinite(lat) && isFinite(lng)) return { lat, lng };
+  }
+  const lat = +(s.StationLatitude ?? s.lat), lng = +(s.StationLongitude ?? s.lon);
+  if (isFinite(lat) && isFinite(lng)) return { lat, lng };
+  return null;
+}
+function vnum(v) { const n = +v; return isFinite(n) && n >= 0 ? n : null; } // -99/-990/T/X → null
+function getRainRate(s) {
+  const re = s.RainfallElement || s.rainfallElement;
+  if (re) {
+    const p1 = vnum(re.Past1hr && re.Past1hr.Precipitation);
+    if (p1 != null) return p1;                                   // 過去1小時 mm ≈ mm/hr
+    const p10 = vnum((re.Past10Min || re.Past10min || {}).Precipitation);
+    if (p10 != null) return +(p10 * 6).toFixed(1);               // 10分 × 6
+    const now = vnum(re.Now && re.Now.Precipitation);
+    if (now != null) return now;
+  }
+  return 0;
+}
+function getObsTime(s) { return (s.ObsTime && s.ObsTime.DateTime) || s.obsTime || null; }
+
+function nearestStation(stations, lat, lng) {
+  let best = null, bd = Infinity;
+  for (const s of stations) { const d = haversine(lat, lng, s.lat, s.lng); if (d < bd) { bd = d; best = s; } }
+  return best;
+}
+function haversine(la1, lo1, la2, lo2) {
+  const R = 6371, dLa = (la2 - la1) * Math.PI / 180, dLo = (lo2 - lo1) * Math.PI / 180;
+  const a = Math.sin(dLa / 2) ** 2 + Math.cos(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) * Math.sin(dLo / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 async function cwaFetch(dataId, key, { fileapi = false, format = "JSON", params = {} } = {}) {
+  if (!key) throw new Error("CWA_KEY not set");
   const base = fileapi
     ? `https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/${dataId}`
     : `https://opendata.cwa.gov.tw/api/v1/rest/datastore/${dataId}`;
