@@ -23,7 +23,9 @@ font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-web
 
 /* 共用水杯卡 */
 .wcard{position:relative;overflow:hidden;background:var(--card);border:1px solid var(--line);border-radius:16px}
-.wfill{position:absolute;left:0;right:0;bottom:0;transition:height 1s cubic-bezier(.4,1.2,.5,1),background .5s;opacity:.92}
+.wfill{position:absolute;left:0;right:0;bottom:0;transition:height 1s cubic-bezier(.4,1.2,.5,1),background .5s,opacity .4s;opacity:.92;border-radius:0 0 14px 14px}
+  .wfill::before{content:"";position:absolute;top:-5px;left:0;right:0;height:11px;background:inherit;border-radius:50%;opacity:.85}
+  .bigcard .wfill{border-radius:0 0 16px 16px}
 .wcard .inner{position:relative;z-index:2}
 
 /* 精簡模式大卡 */
@@ -50,8 +52,8 @@ font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-web
 
 /* 進階：點卡 */
 .points{display:flex;gap:8px;margin-top:18px}
-.pp{flex:1;height:104px;cursor:pointer}
-.pp .inner{padding:12px 6px;text-align:center;height:100%;display:flex;flex-direction:column;justify-content:center}
+.pp{flex:1;height:118px;cursor:pointer}
+.pp .inner{padding:13px 6px;text-align:center;height:100%;display:flex;flex-direction:column;justify-content:flex-start;gap:1px}
 .pp .ar{font-size:13px;color:var(--muted)}
 .pp .lv{font-size:15px;font-weight:800;margin-top:3px}
 .pp .mrib{display:flex;gap:2px;margin-top:9px}
@@ -195,7 +197,7 @@ function renderSimple(){
   else if(q>0){ const qk=classify(q); qline="未來 1 小時：可能下 "+q+" mm（你附近 1.25km）"; qcol=qk.c; }
   else { qline="未來 1 小時：附近沒有雨勢移入"; qcol="var(--dry)"; }
   v.innerHTML=`<div class="wcard bigcard">
-    <div class="wfill" style="height:${fillH(h.mm_hr)}%;background:${k.c}"></div>
+    <div class="wfill" style="height:${fillH(h.mm_hr)}%;background:${k.c}${h.mm_hr<=0?';opacity:0':''}"></div>
     <div class="inner">
       <div><div class="bigloc">所在地 · ${h.county||""}</div><div class="bigsub">最近測站 ${h.name||""}</div></div>
       <div class="bigverdict" style="color:${k.t?'#fff':'var(--txt)'}">${vd.title}</div>
@@ -210,11 +212,12 @@ function renderSimple(){
 /* ---------------- 進階模式 ---------------- */
 function ppCard(label,mm,blocks,dayWin,onclick){
   const k=classify(mm);
+  const h=mm<=0?0:Math.min(50,16+mm/30*34);            // 燒杯：最多佔下半部
   const segs=slots(blocks,dayWin).map(s=>`<i style="background:${s.k.t?s.k.c:'var(--line)'}"></i>`).join("");
   return `<div class="pp wcard" onclick="${onclick}">
-    <div class="wfill" style="height:${fillH(mm)}%;background:${k.c}"></div>
+    <div class="wfill" style="height:${h}%;background:${k.c}${mm<=0?';opacity:0':''}"></div>
     <div class="inner"><div class="ar">${label}</div>
-      <div class="lv" style="color:${k.t?'#fff':'var(--muted)'}">${k.label}</div>
+      <div class="lv" style="color:${k.t?'var(--txt)':'var(--muted)'}">${k.label}</div>
       <div class="mrib">${segs}</div></div></div>`;
 }
 function renderPoints(){
