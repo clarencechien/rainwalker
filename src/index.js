@@ -43,6 +43,30 @@ export default {
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
+    // 除錯：探 W-C0033 天氣特報結構
+    if (url.pathname === "/warn") {
+      try {
+        const raw = await cwaFetch("W-C0033-001", env.CWA_KEY);
+        const recs = raw && raw.records || {};
+        const locs = recs.location || recs.Location || (recs.record && recs.record) || [];
+        const names = (Array.isArray(locs) ? locs : []).map(l => l.locationName || l.LocationName).filter(Boolean);
+        // 嘗試挖出每個有特報的縣市 + 現象
+        const active = [];
+        for (const l of (Array.isArray(locs) ? locs : [])) {
+          const nm = l.locationName || l.LocationName;
+          const hz = l.hazardConditions || l.HazardConditions || {};
+          const arr = (hz.hazards || hz.Hazards || []);
+          const phen = (Array.isArray(arr) ? arr : []).map(h => {
+            const info = h.info || h.Info || {};
+            return info.phenomena || info.Phenomena || JSON.stringify(info).slice(0, 60);
+          });
+          if (phen.length) active.push({ county: nm, phenomena: phen });
+        }
+        return json({ topKeys: Object.keys(recs), loc_count: names.length, names: names.slice(0, 25),
+          active, sample: (Array.isArray(locs) && locs[0]) ? JSON.stringify(locs[0]).slice(0, 1400) : null });
+      } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
     return env.ASSETS.fetch(request);
   }
 };
