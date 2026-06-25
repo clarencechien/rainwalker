@@ -229,6 +229,16 @@ async function fetchWarnings(key) {
 
 // ── 融合：現況 + 趨勢 + QPF + 3hr預報 + 特報 → 一句判語 ──────────
 function tierOf(mm) { return mm < 0.2 ? 0 : mm < 1 ? 1 : mm < 4 ? 2 : mm < 10 ? 3 : mm < 30 ? 4 : 5; }
+// 強度詞：依 tier
+const TIER_WORD = ["雨", "毛毛雨", "小雨", "中雨", "大雨", "豪雨"];
+// 行動建議：依 tier（致災級才強烈）
+function actionHint(tier, wp) {
+  if (tier >= 5) return "建議改捷運、別騎車";
+  if (tier >= 4) return wp ? `留意${wp}特報，騎車穿雨衣` : "帶傘，騎車穿雨衣";
+  if (tier >= 3) return "記得帶傘";
+  if (tier >= 1) return "影響不大，帶把傘保險";
+  return "放心出門";
+}
 function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
   now = +now || 0;
   const trend = (r10 != null && r1h != null)
@@ -240,26 +250,39 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
   const q = (qpf == null) ? null : +qpf;
   const raining = now >= 0.2;
   let verdict, sub, poss, tier;
+  const W = t => TIER_WORD[Math.max(1, Math.min(5, t))];   // 強度詞（至少「雨」）
 
   if (raining) {
     if (now < 1 && trend !== "falling" && (plan3 >= 8 || wp)) {
-      verdict = "還好，但要注意"; sub = wp ? `現在很小，但已發布${wp}特報` : "現在很小，但預報偏大"; tier = 3; poss = "中";
+      tier = tierOf(Math.max(plan3, q || 0)) || 4; poss = "中";
+      verdict = "還好，但要注意";
+      sub = wp ? `現在很小，但發布${wp}特報，恐轉${W(tier)}` : `現在很小，但預報轉${W(tier)}`;
     } else if (trend === "rising" || (q != null && q > now + 1)) {
-      verdict = "正在下，還會更大"; sub = wp ? `雨勢增強，留意${wp}特報` : "未來半小時雨勢增強"; tier = tierOf(Math.max(now, q || now)); poss = "高";
+      tier = tierOf(Math.max(now, q || now)); poss = "高";
+      verdict = `正在下，還會更大`;
+      sub = `雨勢增強中，逼近${W(tier)}${wp ? "（已發布" + wp + "特報）" : ""} · ${actionHint(tier, wp)}`;
     } else if (trend === "falling" && (q == null || q < now)) {
-      verdict = "正在下，快停了"; sub = "再等一下就趨緩"; tier = tierOf(now); poss = "高";
+      tier = tierOf(now); poss = "高";
+      verdict = `正在下${W(tier)}，快停了`; sub = "再等一下就趨緩，先別急著淋雨";
     } else {
-      verdict = "正在下"; sub = wp ? `留意${wp}特報` : "記得帶傘"; tier = tierOf(now); poss = "高";
+      tier = tierOf(now); poss = "高";
+      verdict = `正在下${W(tier)}`; sub = `${wp ? "留意" + wp + "特報 · " : ""}${actionHint(tier, wp)}`;
     }
   } else {
     if (q != null && q > 0) {
-      verdict = "等一下會下"; sub = "大約半小時內，會下一陣子"; tier = tierOf(q); poss = "高";
+      tier = tierOf(q); poss = "高";
+      verdict = tier >= 5 ? "馬上有豪雨" : tier >= 4 ? `等下會下${W(tier)}` : `等一下會下${W(tier)}`;
+      sub = `約半小時內報到，會下一陣子 · ${actionHint(tier, wp)}`;
     } else if (plan3 > 0) {
-      verdict = "稍後可能下"; sub = nb ? `預報 ${nb.from} 時前後有雨` : "今日稍後有雨"; tier = tierOf(plan3); poss = wp ? "高" : "中";
+      tier = tierOf(plan3); poss = wp ? "高" : "中";
+      verdict = `稍後可能下${W(tier)}`;
+      sub = (nb ? `預報 ${nb.from} 時前後` : "今日稍後") + `有${W(tier)}${wp ? "，已發布" + wp + "特報" : ""}`;
     } else if (wp) {
-      verdict = "目前無雨，但要注意"; sub = `全區發布${wp}特報，留意變化`; tier = 3; poss = "中";
+      tier = 3; poss = "中";
+      verdict = "目前無雨，但要注意"; sub = `全區發布${wp}特報，留意天氣變化`;
     } else {
-      verdict = "接下來不會下"; sub = "放心出門"; tier = 0; poss = "低";
+      tier = 0; poss = "低";
+      verdict = "接下來不會下"; sub = "未來1小時無雨勢移入，放心出門";
     }
   }
 
