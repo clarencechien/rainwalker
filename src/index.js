@@ -31,39 +31,20 @@ export default {
         const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));
         const fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]);
         const qpf = await readQpf(env);
+        const warnings = await fetchWarnings(env.CWA_KEY);
         const sorted = stations.map(s => ({ ...s, dist: haversine(lat, lng, s.lat, s.lng) })).sort((a, b) => a.dist - b.dist);
         const here = sorted[0] || null;
         const county = here ? here.county : null;
+        const plan = county ? (fc[county] || []) : [];
+        const d8 = new Date(Date.now() + 8 * 3600 * 1000), nowHr = d8.getHours() + d8.getMinutes() / 60;
+        const qv = qpfAt(qpf, lat, lng);
         return json({
           lat, lng, day_window: CONFIG.day_window || [6, 24], qpf_time: qpf ? qpf.datetime : null,
-          here: here ? { name: here.name, mm_hr: here.mm_hr, county, qpf_1h: qpfAt(qpf, lat, lng) } : null,
-          plan: county ? (fc[county] || []) : [],
+          here: here ? { name: here.name, mm_hr: here.mm_hr, county, qpf_1h: qv,
+            nowcast: buildNowcast(here.mm_hr, here.r10, here.r1h, qv, plan, warnings[county], nowHr) } : null,
+          plan,
           nearby: sorted.slice(0, n).map(s => ({ name: s.name, area: s.county, mm_hr: s.mm_hr, dist_km: +s.dist.toFixed(2) }))
         });
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
-    // 除錯：探 W-C0033 天氣特報結構
-    if (url.pathname === "/warn") {
-      try {
-        const raw = await cwaFetch("W-C0033-001", env.CWA_KEY);
-        const recs = raw && raw.records || {};
-        const locs = recs.location || recs.Location || (recs.record && recs.record) || [];
-        const names = (Array.isArray(locs) ? locs : []).map(l => l.locationName || l.LocationName).filter(Boolean);
-        // 嘗試挖出每個有特報的縣市 + 現象
-        const active = [];
-        for (const l of (Array.isArray(locs) ? locs : [])) {
-          const nm = l.locationName || l.LocationName;
-          const hz = l.hazardConditions || l.HazardConditions || {};
-          const arr = (hz.hazards || hz.Hazards || []);
-          const phen = (Array.isArray(arr) ? arr : []).map(h => {
-            const info = h.info || h.Info || {};
-            return info.phenomena || info.Phenomena || JSON.stringify(info).slice(0, 60);
-          });
-          if (phen.length) active.push({ county: nm, phenomena: phen });
-        }
-        return json({ topKeys: Object.keys(recs), loc_count: names.length, names: names.slice(0, 25),
-          active, sample: (Array.isArray(locs) && locs[0]) ? JSON.stringify(locs[0]).slice(0, 1400) : null });
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
@@ -92,22 +73,23 @@ async function buildLive(env, qpf) {
   const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY, { params }));
   if (!stations.length) throw new Error("no stations parsed");
   const byId = Object.fromEntries(stations.map(s => [s.id, s]));
-
-  const points = CONFIG.points.map(p => {
-    const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
-    return { id: p.id, name: p.name, area: p.area, lat: p.lat, lng: p.lng,
-             mm_hr: st ? st.mm_hr : 0, qpf_1h: qpfAt(qpf, p.lat, p.lng) };
-  });
-  const mmOf = Object.fromEntries(points.map(p => [p.id, p.mm_hr]));
   const countyOf = Object.fromEntries(CONFIG.points.map(p => [p.id, p.county]));
 
   let fc = {};
-  try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); }
-  catch (e) { fc = {}; }
-  points.forEach(pt => { pt.plan = fc[countyOf[pt.id]] || []; });
+  try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); } catch (e) { fc = {}; }
+  const warnings = await fetchWarnings(env.CWA_KEY);
 
   const d8 = new Date(Date.now() + 8 * 3600 * 1000);
   const nowHr = d8.getHours() + d8.getMinutes() / 60;
+
+  const points = CONFIG.points.map(p => {
+    const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
+    const mm = st ? st.mm_hr : 0, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[p.county] || [];
+    return { id: p.id, name: p.name, area: p.area, lat: p.lat, lng: p.lng,
+             mm_hr: mm, qpf_1h: qv, plan,
+             nowcast: buildNowcast(mm, st ? st.r10 : null, st ? st.r1h : null, qv, plan, warnings[p.county], nowHr) };
+  });
+  const mmOf = Object.fromEntries(points.map(p => [p.id, p.mm_hr]));
 
   const paths = CONFIG.paths.map(p => {
     const peak = Math.max(mmOf[p.from] || 0, mmOf[p.to] || 0);
@@ -179,8 +161,10 @@ function extractStations(raw) {
   for (const s of arr) {
     const c = getWGS84(s);
     if (!c) continue;
+    const rt = getRates(s);
     out.push({ name: s.StationName || s.locationName || s.StationId, id: s.StationId,
-               lat: c.lat, lng: c.lng, mm_hr: getRainRate(s), obsTime: getObsTime(s),
+               lat: c.lat, lng: c.lng, mm_hr: getRainRate(s), r10: rt.r10, r1h: rt.r1h,
+               obsTime: getObsTime(s),
                county: (s.GeoInfo && s.GeoInfo.CountyName) || s.CountyName || null });
   }
   return out;
@@ -209,6 +193,12 @@ function getRainRate(s) {
   }
   return 0;
 }
+function getRates(s) {
+  const re = s.RainfallElement || s.rainfallElement || {};
+  const r1h = vnum(re.Past1hr && re.Past1hr.Precipitation);
+  const p10 = vnum((re.Past10Min || re.Past10min || {}).Precipitation);
+  return { r10: p10 != null ? +(p10 * 6).toFixed(1) : null, r1h: r1h };
+}
 function getObsTime(s) { return (s.ObsTime && s.ObsTime.DateTime) || s.obsTime || null; }
 function nearestStation(stations, lat, lng) {
   let best = null, bd = Infinity;
@@ -219,6 +209,67 @@ function haversine(la1, lo1, la2, lo2) {
   const R = 6371, dLa = (la2 - la1) * Math.PI / 180, dLo = (lo2 - lo1) * Math.PI / 180;
   const a = Math.sin(dLa / 2) ** 2 + Math.cos(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) * Math.sin(dLo / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// ── W-C0033 天氣特報 → { 縣市: [現象...] } ─────────────────────
+async function fetchWarnings(key) {
+  try {
+    const raw = await cwaFetch("W-C0033-001", key);
+    const locs = (raw && raw.records && raw.records.location) || [];
+    const out = {};
+    for (const l of locs) {
+      const nm = l.locationName;
+      const hz = (l.hazardConditions && l.hazardConditions.hazards) || [];
+      const phen = hz.map(h => h.info && h.info.phenomena).filter(Boolean);
+      if (phen.length) out[nm] = [...new Set(phen)];
+    }
+    return out;
+  } catch (e) { return {}; }
+}
+
+// ── 融合：現況 + 趨勢 + QPF + 3hr預報 + 特報 → 一句判語 ──────────
+function tierOf(mm) { return mm < 0.2 ? 0 : mm < 1 ? 1 : mm < 4 ? 2 : mm < 10 ? 3 : mm < 30 ? 4 : 5; }
+function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
+  now = +now || 0;
+  const trend = (r10 != null && r1h != null)
+    ? (r10 > r1h * 1.3 + 0.2 ? "rising" : (r10 < r1h * 0.7 - 0.05 ? "falling" : "steady")) : "steady";
+  const fut = (plan || []).filter(b => b.to > nowHr);
+  const nb = fut[0] || null;
+  const plan3 = nb ? nb.mm_hr : 0;
+  const wp = (warn && warn.length) ? warn[0] : null;
+  const q = (qpf == null) ? null : +qpf;
+  const raining = now >= 0.2;
+  let verdict, sub, poss, tier;
+
+  if (raining) {
+    if (now < 1 && trend !== "falling" && (plan3 >= 8 || wp)) {
+      verdict = "還好，但要注意"; sub = wp ? `現在很小，但已發布${wp}特報` : "現在很小，但預報偏大"; tier = 3; poss = "中";
+    } else if (trend === "rising" || (q != null && q > now + 1)) {
+      verdict = "正在下，還會更大"; sub = wp ? `雨勢增強，留意${wp}特報` : "未來半小時雨勢增強"; tier = tierOf(Math.max(now, q || now)); poss = "高";
+    } else if (trend === "falling" && (q == null || q < now)) {
+      verdict = "正在下，快停了"; sub = "再等一下就趨緩"; tier = tierOf(now); poss = "高";
+    } else {
+      verdict = "正在下"; sub = wp ? `留意${wp}特報` : "記得帶傘"; tier = tierOf(now); poss = "高";
+    }
+  } else {
+    if (q != null && q > 0) {
+      verdict = "等一下會下"; sub = "大約半小時內，會下一陣子"; tier = tierOf(q); poss = "高";
+    } else if (plan3 > 0) {
+      verdict = "稍後可能下"; sub = nb ? `預報 ${nb.from} 時前後有雨` : "今日稍後有雨"; tier = tierOf(plan3); poss = wp ? "高" : "中";
+    } else if (wp) {
+      verdict = "目前無雨，但要注意"; sub = `全區發布${wp}特報，留意變化`; tier = 3; poss = "中";
+    } else {
+      verdict = "接下來不會下"; sub = "放心出門"; tier = 0; poss = "低";
+    }
+  }
+
+  const ev = [now, q != null ? q : 0, plan3];
+  const why = [`雨量站 ${now} mm`];
+  if (trend === "rising") why.push("趨勢↑"); else if (trend === "falling") why.push("趨勢↓");
+  if (q != null) why.push(`未來1時 QPF ${q} mm`);
+  if (nb) why.push(`預報 ${nb.from}時${nb.pop ? " " + nb.pop + "%" : ""}`);
+  if (wp) why.push(`⚠ ${wp}特報`);
+  return { verdict, sub, possibility: poss, tier, trend, evidence: ev, why, warn: wp };
 }
 
 // ── F-D0047-089 全台縣市逐3小時預報 ─────────────────────────────
