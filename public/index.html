@@ -115,6 +115,7 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
   .whybox.show{display:flex}
   .chip{font-size:10px;color:var(--muted);background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:3px 7px}
   .chip.w{color:var(--warn);border-color:var(--warn)}
+  .warnbar{background:rgba(242,136,78,.12);border:1px solid var(--warn);color:var(--warn);border-radius:10px;padding:9px 13px;font-size:13px;font-weight:700;margin-top:14px;text-align:center}
 </style>
 </head>
 <body>
@@ -122,6 +123,7 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
   <div class="top"><span class="wm">雨縫</span><span class="time" id="now2">—</span></div>
   <div class="clock" id="clock">—</div>
   <div class="fresh" id="fresh">載入中…</div>
+  <div id="warnbar"></div>
 
   <div class="simple" id="simpleView"></div>
   <div id="proView" hidden>
@@ -144,6 +146,7 @@ const DATA_URL="/data.json";
 function nowStr(){return new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false});}
 function nowHr(){const d=new Date();return d.getHours()+d.getMinutes()/60;}
 const TIERC=["var(--dry)","var(--i1)","var(--i2)","var(--i3)","var(--i4)","var(--i5)"];
+const WORD=["雨","毛毛雨","小雨","中雨","大雨","豪雨"];
 
 function classify(mm){
   if(mm==null||mm<=0) return {t:0,label:"無雨",c:"var(--dim)"};
@@ -226,20 +229,26 @@ function renderSimple(){
 }
 
 /* ---------------- 進階模式 ---------------- */
-function ppCard(label,mm,blocks,dayWin,onclick){
-  const k=classify(mm);
-  const h=mm<=0?0:Math.min(50,16+mm/30*34);            // 燒杯：最多佔下半部
-  const segs=slots(blocks,dayWin).map(s=>`<i style="background:${s.k.t?s.k.c:'var(--line)'}"></i>`).join("");
+function ppCard(label,p,onclick){
+  const mm=p.mm_hr||0, nc=p.nowcast||{};
+  const tier=(nc.tier!=null)?nc.tier:classify(mm).t;
+  const tc=TIERC[tier]||"var(--muted)";
+  const h=mm<=0?0:Math.min(50,16+mm/30*34);
+  const segs=slots(p.plan,DATA.day_window).map(s=>`<i style="background:${s.k.t?s.k.c:'var(--line)'}"></i>`).join("");
+  let lv;
+  if(mm>=0.2) lv=classify(mm).label;
+  else if(tier>0 && nc.verdict && /會下|有|注意/.test(nc.verdict)) lv="將"+WORD[tier];
+  else lv="無雨";
   return `<div class="pp wcard" onclick="${onclick}">
-    <div class="wfill" style="height:${h}%;background:${k.c}${mm<=0?';opacity:0':''}"></div>
+    <div class="wfill" style="height:${h}%;background:${classify(mm).c}${mm<=0?';opacity:0':''}"></div>
     <div class="inner"><div class="ar">${label}</div>
-      <div class="lv" style="color:${k.t?'var(--txt)':'var(--muted)'}">${k.label}</div>
+      <div class="lv" style="color:${tier>0?tc:'var(--muted)'}">${lv}</div>
       <div class="mrib">${segs}</div></div></div>`;
 }
 function renderPoints(){
   let html="";
-  if(HERE&&HERE.here) html+=ppCard("所在地",HERE.here.mm_hr,HERE.plan,HERE.day_window,`openDetailLL(${HERE.lat},${HERE.lng},'所在地')`);
-  html+=(DATA.points||[]).map(p=>ppCard(p.area,p.mm_hr,p.plan,DATA.day_window,`openPoint('${p.id}')`)).join("");
+  if(HERE&&HERE.here) html+=ppCard("所在地",{mm_hr:HERE.here.mm_hr,plan:HERE.plan,nowcast:HERE.here.nowcast},`openDetailLL(${HERE.lat},${HERE.lng},'所在地')`);
+  html+=(DATA.points||[]).map(p=>ppCard(p.area,p,`openPoint('${p.id}')`)).join("");
   document.getElementById("points").innerHTML=html;
 }
 function renderTabs(){
@@ -260,16 +269,24 @@ function dayStrip(plan,dayWin){
   return `<div class="day lbl"><div class="dtrack"></div>${blocks}<div class="dnow" style="left:${L}%"></div><div class="dticks">${ticks}</div></div>`;
 }
 function renderCard(){
-  const p=DATA.paths[sel], k=classify(p.peak_mm_hr);
+  const p=DATA.paths[sel];
   const area={}; (DATA.points||[]).forEach(pt=>area[pt.id]=pt.area);
-  let vtxt,vhint;
-  if(p.status==="clear"){ vtxt=`<span style="color:var(--dry)">整段無雨</span>`; vhint="這條路徑現在沒有下雨"; }
-  else { vtxt=`出發就遇 <span style="color:${k.c}">${k.label}</span>`; vhint=verdict(p.peak_mm_hr).hint; }
+  const pf=(DATA.points||[]).find(x=>x.id===p.from)||{}, pt2=(DATA.points||[]).find(x=>x.id===p.to)||{};
+  let top=null; [pf.nowcast,pt2.nowcast].forEach(n=>{ if(n&&(!top||(n.tier||0)>(top.tier||0))) top=n; });
+  let vtxt,vhint,vc;
+  if(!top||top.tier===0){ vtxt="整段無雨"; vhint="這條路徑現在與接下來都沒有雨"; vc="var(--dry)"; }
+  else {
+    const word=WORD[top.tier]||"雨", raining=Math.max(pf.mm_hr||0,pt2.mm_hr||0)>=0.2;
+    vtxt = raining?`出發就遇${word}`:`出發後不久遇${word}`;
+    vhint=top.sub||"帶傘"; vc=TIERC[top.tier];
+  }
   const st=STATE_TXT[(p.plan&&p.plan.state)]||STATE_TXT.forecast;
+  const warnB=top&&top.warn?`<div class="warnline" style="margin:10px 0 0">⚠ ${top.warn}特報（全區）</div>`:"";
   document.getElementById("card").innerHTML=
     `<div class="card">
-      <div class="verdict">${vtxt}</div>
+      <div class="verdict" style="color:${vc}">${vtxt}</div>
       <div class="vhint">${vhint}</div>
+      ${warnB}
       <div class="meta"><span class="route">${area[p.from]||p.from}<span class="raq">→</span>${area[p.to]||p.to}</span>
         <span class="state"><span class="sd" style="background:${st.c}"></span><span style="color:${st.c}">${st.t}</span></span></div>
       <div class="daylabel">今日預報（每 3 小時 · 縣市級）</div>
@@ -303,7 +320,7 @@ function renderDetail(label,at){
     `<div class="dpanel">
       <div class="dhead"><div><div class="dttl">${label}</div><div class="dsub">${cty}${at.here?' · 最近站 '+at.here.name:''}</div></div>
         <button class="dclose" onclick="closeDetail()">✕</button></div>
-      ${(function(){const q=at.here&&at.here.qpf_1h;if(q==null)return"";const t=q>0?`可能下 ${q} mm`:"沒有雨勢移入";const c=q>0?classify(q).c:"var(--dry)";return `<div class="dlabel">未來 1 小時（雷達推估 · 1.25km）</div><div style="font-size:15px;font-weight:700;color:${c}">${t}</div>`;})()}
+      ${(function(){const nc=at.here&&at.here.nowcast;if(!nc)return"";const c=TIERC[nc.tier]||"var(--txt)";const wl=nc.warn?`<div class="warnline" style="margin-top:8px">⚠ ${cty}${nc.warn}特報（全區）</div>`:"";return `<div style="font-size:21px;font-weight:800;color:${c};margin-top:4px">${nc.verdict}</div><div style="font-size:13px;color:var(--muted);margin-top:4px">${nc.sub||""}</div>${wl}`;})()}
       <div class="dlabel">今日預報（${cty}逐 3 小時）</div>
       <div class="rib">${segs}</div><div class="rhrs">${hrs}</div>
       <div class="dlabel">附近測站現況（mm/hr）</div>
@@ -328,7 +345,14 @@ function initGeo(force){
 
 /* ---------------- mode ---------------- */
 function setMode(m){ MODE=m; saveMode(m); renderActive(); }
+function updateWarnbar(){
+  const ws=new Set();
+  [HERE&&HERE.here&&HERE.here.nowcast].concat((DATA&&DATA.points||[]).map(p=>p.nowcast)).forEach(n=>{if(n&&n.warn)ws.add(n.warn);});
+  const wb=document.getElementById("warnbar");
+  if(wb) wb.innerHTML = ws.size?`<div class="warnbar">⚠ ${[...ws].join("、")}特報生效中</div>`:"";
+}
 function renderActive(){
+  updateWarnbar();
   const simple=MODE==="simple";
   document.getElementById("simpleView").hidden=!simple;
   document.getElementById("proView").hidden=simple;
