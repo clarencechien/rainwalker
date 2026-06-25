@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
 :root{--bg:#0f1622;--bg2:#15202f;--card:#1a2535;--line:#2a3850;--txt:#e8eef7;--muted:#9fb0c8;--dim:#5d6e87;
---dry:#3a86ff;--i1:#7aa7ff;--i2:#42c98b;--i3:#f2c14e;--i4:#f2884e;--i5:#e5484d;--sky:#3a86ff;}
+--dry:#3a86ff;--i1:#7aa7ff;--i2:#42c98b;--i3:#f2c14e;--i4:#f2884e;--i5:#e5484d;--sky:#3a86ff;--warn:#f2884e;}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--txt);
 font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
@@ -23,7 +23,7 @@ font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-web
 
 /* 共用水杯卡 */
 .wcard{position:relative;overflow:hidden;background:var(--card);border:1px solid var(--line);border-radius:16px}
-.wfill{position:absolute;left:0;right:0;bottom:0;transition:height 1s cubic-bezier(.4,1.2,.5,1),background .5s,opacity .4s;opacity:.92;border-radius:0 0 14px 14px}
+.wfill{position:absolute;left:0;right:0;bottom:0;transition:height 1s cubic-bezier(.4,1.2,.5,1),background .5s,opacity .4s;opacity:.42;border-radius:0 0 14px 14px}
   .wfill::before{content:"";position:absolute;top:-5px;left:0;right:0;height:11px;background:inherit;border-radius:50%;opacity:.85}
   .bigcard .wfill{border-radius:0 0 16px 16px}
 .wcard .inner{position:relative;z-index:2}
@@ -103,6 +103,18 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
 .dnote{font-size:11px;color:var(--dim);margin-top:16px;line-height:1.5}
 .dloading{padding:34px 0;text-align:center;color:var(--muted)}
 .dempty{color:var(--dim);font-size:13px;padding:8px}
+  .bigsub2{font-size:11px;color:var(--dim);margin-top:2px}
+  .poss{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;margin-top:12px;padding:4px 11px;border-radius:20px;border:1px solid var(--line);width:fit-content}
+  .poss .d{width:7px;height:7px;border-radius:50%}
+  .warnline{font-size:12px;color:var(--warn);margin-top:10px;font-weight:600}
+  .ev3{display:flex;align-items:flex-end;gap:6px;height:44px;margin-top:8px}
+  .ev3 .b{flex:1;border-radius:4px;min-height:5px;transition:height .6s,background .5s}
+  .evax{display:flex;justify-content:space-between;font-size:9px;color:var(--dim);margin-top:4px}
+  .whytog{font-size:12px;color:var(--sky);margin-top:16px;font-weight:600;cursor:pointer;user-select:none}
+  .whybox{margin-top:8px;display:none;flex-wrap:wrap;gap:5px}
+  .whybox.show{display:flex}
+  .chip{font-size:10px;color:var(--muted);background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:3px 7px}
+  .chip.w{color:var(--warn);border-color:var(--warn)}
 </style>
 </head>
 <body>
@@ -131,6 +143,7 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
 const DATA_URL="/data.json";
 function nowStr(){return new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false});}
 function nowHr(){const d=new Date();return d.getHours()+d.getMinutes()/60;}
+const TIERC=["var(--dry)","var(--i1)","var(--i2)","var(--i3)","var(--i4)","var(--i5)"];
 
 function classify(mm){
   if(mm==null||mm<=0) return {t:0,label:"無雨",c:"var(--dim)"};
@@ -186,26 +199,29 @@ function renderSimple(){
       <button class="btn ghost" onclick="setMode('pro')">改用進階模式（看固定地點）</button></div>`;
     return;
   }
-  const h=HERE.here, k=classify(h.mm_hr), vd=verdict(h.mm_hr);
-  const ss=slots(HERE.plan,HERE.day_window||[6,24]);
-  const segs=ss.map(s=>`<div class="seg" style="height:${s.k.t?Math.max(20,fillH(s.k.t*5)):8}%;background:${s.k.t?s.k.c:'var(--line)'}"></div>`).join("");
-  const hrs=ss.map(s=>`<span>${String(s.h%24).padStart(2,'0')}</span>`).join("");
-  const nmax=Math.max(0,...(HERE.nearby||[]).map(s=>s.mm_hr||0));
-  const nearNote=(nmax>h.mm_hr+1)?`<div class="bignear">附近有測站雨勢更大（最大 ${nmax} mm/hr）</div>`:"";
-  const q=h.qpf_1h; let qline,qcol="var(--muted)";
-  if(q==null){ qline="未來：稍後 "+upcoming(HERE.plan); }
-  else if(q>0){ const qk=classify(q); qline="未來 1 小時：可能下 "+q+" mm（你附近 1.25km）"; qcol=qk.c; }
-  else { qline="未來 1 小時：附近沒有雨勢移入"; qcol="var(--dry)"; }
+  const h=HERE.here, nc=h.nowcast||{};
+  const tier=(nc.tier!=null)?nc.tier:classify(h.mm_hr).t;
+  const tc=TIERC[tier]||"var(--txt)";
+  const ev=nc.evidence||[h.mm_hr||0,h.qpf_1h||0,0];
+  const evbars=ev.map(mm=>{const k=classify(mm);const ht=mm<=0?6:Math.min(100,14+mm/16*86);
+    return `<div class="b" style="height:${ht}%;background:${mm<=0?'var(--line)':k.c}"></div>`}).join("");
+  const why=(nc.why||[]).map(w=>`<span class="chip${/特報/.test(w)?' w':''}">${w}</span>`).join("");
+  const warnLine=nc.warn?`<div class="warnline">⚠ ${h.county||""}${nc.warn}特報（全區）</div>`:"";
+  const poss=nc.possibility||"", possC=poss==="高"?"var(--i2)":poss==="中"?"var(--i3)":"var(--dry)";
+  const fillNow=h.mm_hr<=0?0:Math.min(40,14+h.mm_hr/30*26);
   v.innerHTML=`<div class="wcard bigcard">
-    <div class="wfill" style="height:${fillH(h.mm_hr)}%;background:${k.c}${h.mm_hr<=0?';opacity:0':''}"></div>
+    <div class="wfill" style="height:${fillNow}%;background:${classify(h.mm_hr).c}${h.mm_hr<=0?';opacity:0':''}"></div>
     <div class="inner">
-      <div><div class="bigloc">所在地 · ${h.county||""}</div><div class="bigsub">最近測站 ${h.name||""}</div></div>
-      <div class="bigverdict" style="color:${k.t?'#fff':'var(--txt)'}">${vd.title}</div>
-      <div class="bighint">${vd.hint}</div>
-      <div class="bigup" style="color:${qcol}">${qline}</div>
-      <div class="biglabel">今日預報（每 3 小時 · 縣市級）</div>
-      <div class="rib">${segs}</div><div class="rhrs">${hrs}</div>
-      ${nearNote}
+      <div class="bigloc">所在地 · ${h.county||""}<div class="bigsub2">最近測站 ${h.name||""}</div></div>
+      <div class="bigverdict" style="color:${tc};margin-top:auto">${nc.verdict||"—"}</div>
+      <div class="bighint">${nc.sub||""}</div>
+      <span class="poss" style="color:${possC}"><span class="d" style="background:${possC}"></span>可能性 ${poss}</span>
+      ${warnLine}
+      <div class="evlabel" style="margin-top:18px">接下來的雨勢</div>
+      <div class="ev3">${evbars}</div>
+      <div class="evax"><span>現在</span><span>+1 小時</span><span>+3 小時</span></div>
+      <div class="whytog" onclick="this.nextElementSibling.classList.toggle('show')">▸ 為什麼這樣判？</div>
+      <div class="whybox">${why}</div>
     </div></div>`;
 }
 
