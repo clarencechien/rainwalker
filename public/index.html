@@ -235,10 +235,12 @@ function ppCard(label,p,onclick){
   const tc=TIERC[tier]||"var(--muted)";
   const h=mm<=0?0:Math.min(50,16+mm/30*34);
   const segs=slots(p.plan,DATA.day_window).map(s=>`<i style="background:${s.k.t?s.k.c:'var(--line)'}"></i>`).join("");
+  // label 一律以 fusion tier 為準（跟精簡卡/路徑卡同調）
+  const nowT=classify(mm).t;
   let lv;
-  if(mm>=0.2) lv=classify(mm).label;
-  else if(tier>0 && nc.verdict && /會下|有|注意/.test(nc.verdict)) lv="將"+WORD[tier];
-  else lv="無雨";
+  if(tier<=0) lv="無雨";
+  else if(nowT>=tier) lv=WORD[tier];          // 當下已達該強度：直接講強度詞
+  else lv="轉"+WORD[tier];                     // 當下較弱、等下更強：轉{詞}
   return `<div class="pp wcard" onclick="${onclick}">
     <div class="wfill" style="height:${h}%;background:${classify(mm).c}${mm<=0?';opacity:0':''}"></div>
     <div class="inner"><div class="ar">${label}</div>
