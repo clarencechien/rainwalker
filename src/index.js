@@ -23,8 +23,12 @@ export default {
     }
 
     if (url.pathname === "/refresh") {
-      try { await refresh(env); return json({ ok: true, at: new Date().toISOString() }); }
-      catch (e) { return json({ ok: false, error: String(e) }, 500); }
+      try {
+        await refresh(env);
+        let shadow;
+        try { shadow = await shadowAppend(env); } catch (e) { shadow = { error: String(e) }; }
+        return json({ ok: true, at: new Date().toISOString(), shadow });
+      } catch (e) { return json({ ok: false, error: String(e) }, 500); }
     }
 
     // 任意座標：最近站現況 + 縣市3小時預報 + 未來1小時QPF + 附近N站
@@ -175,6 +179,7 @@ async function shadowAppend(env) {
   }
   await r2AppendLines(env, `shadow/fc/${datePath}.ndjson`, fcLines);
   await r2AppendLines(env, `shadow/ob/${datePath}.ndjson`, obLines);
+  return { slot, wrote: fcLines.length, bound: fcLines.map(l => `${l.pid}:${l.station}`) };
 }
 
 async function refreshQpf(env) {
