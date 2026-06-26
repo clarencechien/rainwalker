@@ -17,6 +17,16 @@ font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-web
 .top{display:flex;justify-content:space-between;align-items:baseline}
 .wm{font-size:14px;font-weight:800;letter-spacing:2px;color:var(--muted)}
 .time{font-size:14px;color:var(--dim);font-variant-numeric:tabular-nums}
+.topr{display:flex;align-items:center;gap:10px}
+.cbtn{background:var(--card);border:1px solid var(--line);color:var(--muted);border-radius:14px;padding:4px 11px;font-size:12px;cursor:pointer;font-weight:600}
+.cbtn:active{opacity:.6}
+.cverd{font-size:30px;font-weight:800;margin:8px 0 14px}
+.crow{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
+.crow b{color:var(--txt);font-size:15px}
+.cnote{padding:12px 0;color:var(--i3);font-size:14px}
+.cmeta{font-size:11px;color:var(--dim);margin-top:14px}
+.cexp{font-size:11px;color:var(--dim);margin-top:8px;line-height:1.6;border-top:1px solid var(--line);padding-top:10px}
+.cdl{display:block;text-align:center;margin-top:16px;background:var(--card);border:1px solid var(--line);color:var(--sky);border-radius:10px;padding:10px;font-size:13px;font-weight:600;text-decoration:none}
 .clock{font-size:54px;font-weight:800;letter-spacing:1px;margin:6px 0 0;font-variant-numeric:tabular-nums}
 .fresh{font-size:12px;color:var(--dim);margin-top:2px}
 .fresh.stale{color:var(--i4)}
@@ -120,7 +130,7 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
 </head>
 <body>
 <div class="wrap">
-  <div class="top"><span class="wm">雨縫</span><span class="time" id="now2">—</span></div>
+  <div class="top"><span class="wm">雨縫</span><span class="topr"><button class="cbtn" onclick="openConf()">準度</button><span class="time" id="now2">—</span></span></div>
   <div class="clock" id="clock">—</div>
   <div class="fresh" id="fresh">載入中…</div>
   <div id="warnbar"></div>
@@ -140,6 +150,7 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
   </footer>
 </div>
 <div id="detail" class="detail" hidden onclick="if(event.target===this)closeDetail()"></div>
+<div id="conf" class="detail" hidden onclick="if(event.target===this)closeConf()"></div>
 
 <script>
 const DATA_URL="/data.json";
@@ -332,6 +343,34 @@ function renderDetail(label,at){
   document.getElementById("detail").hidden=false;
 }
 function closeDetail(){ document.getElementById("detail").hidden=true; }
+function closeConf(){ document.getElementById("conf").hidden=true; }
+async function openConf(){
+  const el=document.getElementById("conf"); el.hidden=false;
+  const head=`<div class="dhead"><div><div class="dttl">判斷準度</div><div class="dsub">最近一週 · 與雨量站對答案</div></div><button class="dclose" onclick="closeConf()">✕</button></div>`;
+  el.innerHTML=`<div class="dpanel">${head}<div class="dloading">載入中…</div></div>`;
+  try{
+    const d=await (await fetch("/shadow/latest")).json();
+    const p=d.public||{}, cov=d.coverage||{}, n=p.settled||0, enough=n>=20;
+    const vc=p.verdict==="大致可靠"?"var(--i2)":p.verdict==="普通"?"var(--i3)":p.verdict==="偏弱"?"var(--i4)":"var(--dim)";
+    let body;
+    if(!d.week){ body=`<div class="cnote">尚無資料，仍在累積中。</div>`; }
+    else {
+      body=`<div class="cverd" style="color:${vc}">${p.verdict||"—"}</div>`;
+      if(enough){
+        body+=`<div class="crow"><span>判斷方向命中</span><b>${p.hit_phrase}</b></div>`;
+        body+=`<div class="crow"><span>漏報（沒提醒卻下了）</span><b>${p.miss_phrase}</b></div>`;
+      } else {
+        body+=`<div class="cnote">${p.note||"資料累積中，暫不評分。"}</div>`;
+      }
+      body+=`<div class="cmeta">${d.week} · 已對答案 ${n} 筆</div>`;
+      body+=`<div class="cexp">準度＝把過去的判斷，跟雨量站實際下的雨對答案算出來的。爛週也照實顯示，不修飾。</div>`;
+      body+=`<a class="cdl" href="/shadow/file?week=${d.week}">下載本週週報</a>`;
+    }
+    el.querySelector(".dpanel").innerHTML=head+body;
+  }catch(e){
+    el.querySelector(".dpanel").innerHTML=head+`<div class="dloading">讀取失敗</div>`;
+  }
+}
 
 /* ---------------- geolocation ---------------- */
 function initGeo(force){
