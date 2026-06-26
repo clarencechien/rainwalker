@@ -4,7 +4,12 @@ const JSONH = { "content-type": "application/json; charset=utf-8" };
 const json = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: JSONH });
 
 export default {
-  async scheduled(event, env, ctx) { ctx.waitUntil(refresh(env)); },
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      await refresh(env);
+      try { await shadowAppend(env); } catch (e) { /* shadow 失敗不影響主流程 */ }
+    })());
+  },
 
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -46,6 +51,22 @@ export default {
           nearby: sorted.slice(0, n).map(s => ({ name: s.name, area: s.county, mm_hr: s.mm_hr, dist_km: +s.dist.toFixed(2) }))
         });
       } catch (e) { return json({ error: String(e) }, 500); }
+    }
+
+    // Shadow log 探針：驗 R2 累積（驗完移除）
+    if (url.pathname === "/shadow/peek") {
+      const day = url.searchParams.get("day") || "";
+      if (day.length !== 8) return json({ error: "need day=YYYYMMDD" }, 400);
+      const dp = `${day.slice(0,4)}/${day.slice(4,6)}/${day.slice(6,8)}`;
+      const n = (CONFIG.shadow_points || []).length || 8;
+      async function rd(k) {
+        try {
+          const o = await env.BUCKET.get(k); if (!o) return { lines: 0 };
+          const ls = (await o.text()).trim().split("\n").filter(Boolean);
+          return { lines: ls.length, last: ls.slice(-n).map(x => JSON.parse(x)) };
+        } catch (e) { return { error: String(e) }; }
+      }
+      return json({ day, points: n, fc: await rd(`shadow/fc/${dp}.ndjson`), ob: await rd(`shadow/ob/${dp}.ndjson`) });
     }
 
     return env.ASSETS.fetch(request);
@@ -116,6 +137,46 @@ async function buildLive(env, qpf) {
 }
 
 // ── QPF：cron 抓整包、抽 qpf_box 內有雨格寫 R2；公式 k=iy*NX+ix（ix=經 iy=緯由南）
+// ── Shadow log（雙 log 純 append；R2 無原生 append → 讀日檔接行寫回）──
+function shadowSlot() {
+  const d = new Date(Date.now() + 8 * 3600 * 1000);   // 位移成台灣時間，用 UTC getter 取值
+  const fl = Math.floor(d.getUTCMinutes() / 10) * 10;
+  const Y = d.getUTCFullYear(), M = String(d.getUTCMonth() + 1).padStart(2, "0"), D = String(d.getUTCDate()).padStart(2, "0");
+  const H = String(d.getUTCHours()).padStart(2, "0"), mm = String(fl).padStart(2, "0");
+  return { slot: `${Y}${M}${D}${H}${mm}`, datePath: `${Y}/${M}/${D}`,
+           ts: `${Y}-${M}-${D}T${H}:${mm}:00+08:00`, nowHr: d.getUTCHours() + d.getUTCMinutes() / 60 };
+}
+async function r2AppendLines(env, key, lines) {
+  if (!lines.length) return;
+  let prev = "";
+  try { const o = await env.BUCKET.get(key); if (o) prev = await o.text(); } catch (e) {}
+  const body = prev + lines.map(l => JSON.stringify(l)).join("\n") + "\n";
+  await env.BUCKET.put(key, body, { httpMetadata: { contentType: "application/x-ndjson" } });
+}
+async function shadowAppend(env) {
+  const pts = CONFIG.shadow_points || [];
+  if (!pts.length) return;
+  const { slot, datePath, ts, nowHr } = shadowSlot();
+  const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));   // 全站，供 8 點綁最近站
+  if (!stations.length) return;
+  const qpf = await readQpf(env);
+  let fc = {}, warnings = {};
+  try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); } catch (e) {}
+  try { warnings = await fetchWarnings(env.CWA_KEY); } catch (e) {}
+  const fcLines = [], obLines = [];
+  for (const p of pts) {
+    const st = nearestStation(stations, p.lat, p.lng); if (!st) continue;
+    const county = st.county, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[county] || [];
+    const nc = buildNowcast(st.mm_hr, st.r10, st.r1h, qv, plan, warnings[county], nowHr);
+    fcLines.push({ slot, pid: p.id, ts, qpf: qv, tier: nc.tier, poss: nc.possibility,
+      trend: nc.trend, verdict: nc.verdict, warn: nc.warn, plan3: nc.evidence[2],
+      now_mm: st.mm_hr, station: st.id, county });
+    obLines.push({ slot, pid: p.id, ts, p1h: st.r1h, p10: st.r10, valid: st.r1h != null });
+  }
+  await r2AppendLines(env, `shadow/fc/${datePath}.ndjson`, fcLines);
+  await r2AppendLines(env, `shadow/ob/${datePath}.ndjson`, obLines);
+}
+
 async function refreshQpf(env) {
   const key = (env.CWA_KEY || "").trim();
   const raw = await (await fetch(`https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`,
