@@ -8,6 +8,10 @@ export default {
     ctx.waitUntil((async () => {
       await refresh(env);
       try { await shadowAppend(env); } catch (e) { /* shadow 失敗不影響主流程 */ }
+      try {
+        const tw = new Date(Date.now() + 8 * 3600 * 1000);
+        if (tw.getUTCHours() === 3 && tw.getUTCMinutes() < 10) await weeklyReport(env);  // 每天 03:0x 更新當週週報
+      } catch (e) {}
     })());
   },
 
@@ -71,6 +75,31 @@ export default {
         } catch (e) { return { error: String(e) }; }
       }
       return json({ day, points: n, fc: await rd(`shadow/fc/${dp}.ndjson`), ob: await rd(`shadow/ob/${dp}.ndjson`) });
+    }
+
+    // 即時統計（不凍結，除錯用）：近 N 週
+    if (url.pathname === "/stats") {
+      const weeks = Math.min(8, +url.searchParams.get("weeks") || 1);
+      const d = new Date(Date.now() + 8 * 3600 * 1000), z = n => String(n).padStart(2, "0"), days = [];
+      for (let i = 0; i < weeks * 7; i++) { const x = new Date(d); x.setUTCDate(d.getUTCDate() - i); days.push(`${x.getUTCFullYear()}/${z(x.getUTCMonth()+1)}/${z(x.getUTCDate())}`); }
+      return json(await computeStats(env, days));
+    }
+    // 生成+凍結週報（手動/補算）：?week=YYYY-Www，省略=當週
+    if (url.pathname === "/shadow/gen") {
+      return json(await weeklyReport(env, url.searchParams.get("week") || undefined));
+    }
+    // 讀當週凍結週報（app 用，不重算）
+    if (url.pathname === "/shadow/latest") {
+      const w = isoWeekOf(new Date(Date.now() + 8 * 3600 * 1000)), wk = `${w.year}-W${String(w.week).padStart(2, "0")}`;
+      try { const o = await env.BUCKET.get(`shadow/report/${wk}.json`); if (o) return new Response(o.body, { headers: JSONH }); } catch (e) {}
+      return json({ error: "no report yet", week: wk }, 404);
+    }
+    // 下載指定週凍結週報
+    if (url.pathname === "/shadow/file") {
+      const wk = url.searchParams.get("week"); if (!wk) return json({ error: "need week=YYYY-Www" }, 400);
+      try { const o = await env.BUCKET.get(`shadow/report/${wk}.json`); if (o)
+        return new Response(o.body, { headers: { ...JSONH, "content-disposition": `attachment; filename="rainwalker-${wk}.json"` } }); } catch (e) {}
+      return json({ error: "not found", week: wk }, 404);
     }
 
     return env.ASSETS.fetch(request);
@@ -180,6 +209,106 @@ async function shadowAppend(env) {
   await r2AppendLines(env, `shadow/fc/${datePath}.ndjson`, fcLines);
   await r2AppendLines(env, `shadow/ob/${datePath}.ndjson`, obLines);
   return { slot, wrote: fcLines.length, bound: fcLines.map(l => `${l.pid}:${l.station}`) };
+}
+
+// ── 對答案 + 打分（join fc[T] ↔ ob[T+60min]）──────────────────
+function tierMm(mm) { mm = +mm || 0; return mm < 0.2 ? 0 : mm < 1 ? 1 : mm < 4 ? 2 : mm < 10 ? 3 : mm < 30 ? 4 : 5; }
+function slotPlus(slot, min) {
+  const d = new Date(Date.UTC(+slot.slice(0,4), +slot.slice(4,6)-1, +slot.slice(6,8), +slot.slice(8,10), +slot.slice(10,12) + min));
+  const z = n => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}${z(d.getUTCMonth()+1)}${z(d.getUTCDate())}${z(d.getUTCHours())}${z(d.getUTCMinutes())}`;
+}
+async function loadNdjson(env, key) {
+  try {
+    const o = await env.BUCKET.get(key); if (!o) return [];
+    return (await o.text()).trim().split("\n").filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch (e) { return []; }
+}
+async function computeStats(env, dayPaths) {
+  const fc = [], ob = [];
+  for (const dp of dayPaths) { fc.push(...await loadNdjson(env, `shadow/fc/${dp}.ndjson`)); ob.push(...await loadNdjson(env, `shadow/ob/${dp}.ndjson`)); }
+  const obMap = new Map(); let maxSlot = "";
+  for (const o of ob) { obMap.set(`${o.pid}|${o.slot}`, o); if (o.slot > maxSlot) maxSlot = o.slot; }
+  let expected = 0, settled = 0, gap = 0, invalid = 0, dirHit = 0, dirTot = 0, fa = 0, faDen = 0, ms = 0, msDen = 0;
+  const poss = { "高": [0,0], "中": [0,0], "低": [0,0] }; const qr = [];
+  for (const f of fc) {
+    const ans = slotPlus(f.slot, 60);
+    if (ans > maxSlot) continue;                 // 答案還沒到，不計入
+    expected++;
+    const o = obMap.get(`${f.pid}|${ans}`);
+    if (!o) { gap++; continue; }
+    if (!o.valid || o.p1h == null) { invalid++; continue; }
+    settled++;
+    const at = tierMm(o.p1h), pt = f.tier;
+    dirTot++; if (Math.abs(pt - at) <= 1) dirHit++;
+    const pr = pt >= 2, ar = at >= 2;
+    if (pr) { faDen++; if (!ar) fa++; } else { msDen++; if (ar) ms++; }
+    if (poss[f.poss]) { poss[f.poss][1]++; if (ar) poss[f.poss][0]++; }
+    if ((+f.now_mm || 0) < 0.2 && +f.qpf > 0) qr.push(o.p1h / f.qpf);
+  }
+  const med = a => { if (!a.length) return null; const x = [...a].sort((m,n)=>m-n), k = x.length >> 1; return x.length % 2 ? x[k] : (x[k-1]+x[k]) / 2; };
+  const r2 = v => v == null ? null : +v.toFixed(2);
+  const rate = ab => ab[1] ? r2(ab[0]/ab[1]) : null;
+  return {
+    coverage: { expected, settled, missing: expected - settled, reasons: { cron_gap: gap, cwa_no_value: invalid } },
+    scores: {
+      direction_hit: dirTot ? r2(dirHit/dirTot) : null,
+      false_alarm: faDen ? r2(fa/faDen) : null,
+      miss: msDen ? r2(ms/msDen) : null,
+      qpf_bias_median: r2(med(qr)),
+      possibility: { "高": rate(poss["高"]), "中": rate(poss["中"]), "低": rate(poss["低"]) }
+    }
+  };
+}
+// 對外口徑（§8.1）：定性為主、漏報露出、不丟裸 %
+function publicView(st) {
+  const s = st.scores, cov = st.coverage;
+  if (cov.settled < 20) return { verdict: "資料不足", hit_phrase: "—", miss_phrase: "—", note: "本週樣本太少，僅供參考", settled: cov.settled };
+  const hit = s.direction_hit, miss = s.miss;
+  return {
+    verdict: hit == null ? "資料不足" : hit >= 0.7 ? "大致可靠" : hit >= 0.5 ? "普通" : "偏弱",
+    hit_phrase: hit == null ? "—" : `約 ${Math.round(hit*10)} 成`,
+    miss_phrase: miss == null ? "—" : miss <= 0.05 ? "極少漏報" : miss <= 0.15 ? "偶有漏報" : "漏報偏多",
+    note: "", settled: cov.settled
+  };
+}
+function suggestions(st) {
+  const out = [], q = st.scores.qpf_bias_median, m = st.scores.miss, P = st.scores.possibility;
+  if (q != null && q < 0.8) out.push(`QPF 中位高估 ${Math.round((1-q)*100)}% → 建議 tier 門檻 ×${q.toFixed(2)}（待人工批准）`);
+  if (q != null && q > 1.25) out.push(`QPF 中位低估 ${Math.round((q-1)*100)}% → 建議 tier 門檻 ×${q.toFixed(2)}（待人工批准）`);
+  if (m != null && m > 0.15) out.push(`漏報率 ${Math.round(m*100)}% 偏高 → 考慮放寬「有雨」判定或調高可能性靈敏度`);
+  if (P["高"] != null && P["中"] != null && Math.abs(P["高"]-P["中"]) < 0.1) out.push("可能性「高」「中」實際下雨率接近 → 區分力不足，考慮重定義");
+  return out;
+}
+// ISO 週 / 該週 7 天路徑
+function isoWeekOf(d) {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = (t.getUTCDay() + 6) % 7; t.setUTCDate(t.getUTCDate() - day + 3);
+  const firstThu = new Date(Date.UTC(t.getUTCFullYear(), 0, 4));
+  const fday = (firstThu.getUTCDay() + 6) % 7; firstThu.setUTCDate(firstThu.getUTCDate() - fday + 3);
+  return { year: t.getUTCFullYear(), week: 1 + Math.round((t - firstThu) / (7 * 864e5)) };
+}
+function weekDayPaths(year, week) {
+  const jan4 = new Date(Date.UTC(year, 0, 4)); const j = (jan4.getUTCDay() + 6) % 7;
+  const mon = new Date(jan4); mon.setUTCDate(jan4.getUTCDate() - j + (week - 1) * 7);
+  const z = n => String(n).padStart(2, "0"); const out = [];
+  for (let i = 0; i < 7; i++) { const d = new Date(mon); d.setUTCDate(mon.getUTCDate() + i);
+    out.push(`${d.getUTCFullYear()}/${z(d.getUTCMonth()+1)}/${z(d.getUTCDate())}`); }
+  return out;
+}
+async function weeklyReport(env, weekStr) {
+  let year, week;
+  if (weekStr) { const m = /^(\d{4})-W(\d{2})$/.exec(weekStr); if (!m) return { error: "week format YYYY-Www" }; year = +m[1]; week = +m[2]; }
+  else { const w = isoWeekOf(new Date(Date.now() + 8 * 3600 * 1000)); year = w.year; week = w.week; }
+  const wk = `${year}-W${String(week).padStart(2, "0")}`;
+  const st = await computeStats(env, weekDayPaths(year, week));
+  const report = {
+    week: wk, generated: new Date(Date.now() + 8 * 3600 * 1000).toISOString().replace("Z", "+08:00"),
+    coverage: st.coverage, scores: st.scores, suggestions: suggestions(st),
+    "public": publicView(st), points: (CONFIG.shadow_points || []).map(p => p.id)
+  };
+  await env.BUCKET.put(`shadow/report/${wk}.json`, JSON.stringify(report), { httpMetadata: { contentType: "application/json" } });
+  return report;
 }
 
 async function refreshQpf(env) {
