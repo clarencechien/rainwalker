@@ -129,10 +129,21 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
   .h3hint{font-size:12.5px;color:var(--i3);margin-top:8px;opacity:.9}
   .possnote{font-weight:400;opacity:.85}
   .minput{background:var(--bg2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px 12px;font-size:14px;width:100%;font-family:inherit}
-  .points{flex-wrap:wrap}
-  .points .pp{flex:1 1 21%;min-width:21%}
+  .points{overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .points::-webkit-scrollbar{display:none}
+  .points .pp{flex:0 0 23%;min-width:92px}
   .locrow{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
   .mgrbtn{background:var(--card);border:1px dashed var(--line);color:var(--dim)}
+  .tabs{overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{flex:1 0 auto;min-width:76px}
+  .tab.add{flex:0 0 46px;min-width:46px}
+  .dgrid{display:flex;flex-wrap:wrap;gap:6px}
+  .dchip{background:var(--bg2);border:1px solid var(--line);color:var(--muted);border-radius:16px;padding:6px 12px;font-size:13px;cursor:pointer}
+  .dchip:active{background:var(--card);color:var(--txt)}
+  .grp{font-size:11px;color:var(--dim);margin:10px 0 6px;font-weight:700}
+  details.adv{margin-top:10px}
+  details.adv summary{font-size:12px;color:var(--dim);cursor:pointer;user-select:none}
 </style>
 </head>
 <body>
@@ -326,7 +337,7 @@ function renderTabs(){
       : p.status!=="clear";
     return `<div class="tab ${i===sel?'on':''} ${alert?'alert':''}" onclick="pick(${i})">
       <div class="rt">${nameOf(p.from)}→${nameOf(p.to)}</div><div class="tg">${p.tag||''}</div></div>`;
-  }).join("");
+  }).join("")+`<div class="tab add" onclick="openMgr('paths')" title="編輯自訂路徑"><div class="rt">＋</div><div class="tg">路徑</div></div>`;
 }
 function dayStrip(plan,dayWin){
   const w0=(dayWin&&dayWin[0])??6, w1=(dayWin&&dayWin[1])??24, span=(w1-w0)||1;
@@ -468,7 +479,23 @@ function nameOf(id){
   const f=((DATA&&DATA.points)||[]).find(x=>x.id===id); if(f) return f.area;
   const c=CPTS.find(x=>x.id===id); return c?c.name:id;
 }
-function openMgr(){ renderMgr(); }
+/* 雙北行政區快選（內建座標，免外部服務；綁最近雨量站所以取中心點即可） */
+const DIST={
+"台北市":[["中正",25.032,121.520],["大同",25.063,121.511],["中山",25.070,121.533],["松山",25.050,121.558],
+["大安",25.026,121.543],["萬華",25.028,121.498],["信義",25.033,121.567],["士林",25.100,121.530],
+["北投",25.132,121.499],["內湖",25.069,121.590],["南港",25.055,121.607],["文山",25.000,121.558]],
+"新北市":[["板橋",25.012,121.459],["三重",25.062,121.487],["中和",24.999,121.499],["永和",25.011,121.514],
+["新莊",25.036,121.432],["新店",24.968,121.542],["土城",24.972,121.444],["蘆洲",25.085,121.474],
+["樹林",24.991,121.425],["汐止",25.067,121.642],["鶯歌",24.955,121.354],["三峽",24.934,121.369],
+["淡水",25.170,121.441],["瑞芳",25.109,121.810],["五股",25.083,121.438],["泰山",25.057,121.430],
+["林口",25.077,121.392],["深坑",25.002,121.616],["石碇",24.992,121.658],["坪林",24.938,121.711],
+["三芝",25.258,121.501],["石門",25.290,121.569],["八里",25.147,121.398],["平溪",25.026,121.739],
+["雙溪",25.034,121.866],["貢寮",25.022,121.908],["金山",25.222,121.636],["萬里",25.176,121.689],["烏來",24.866,121.550]]};
+const MAX_CPTS=8;
+function openMgr(section){
+  renderMgr();
+  if(section==="paths"){ const a=document.getElementById("mgrPaths"); if(a) a.scrollIntoView({block:"start"}); }
+}
 function closeMgr(){ document.getElementById("mgr").hidden=true; }
 function renderMgr(){
   const el=document.getElementById("mgr");
@@ -488,11 +515,18 @@ function renderMgr(){
     </div>
     <div class="dlabel">新增地點</div>
     <div class="dlist">
-      <input id="npName" class="minput" placeholder="名稱（例：公司、小孩學校）">
-      <div style="display:flex;gap:7px"><input id="npLat" class="minput" placeholder="緯度 25.013" inputmode="decimal"><input id="npLng" class="minput" placeholder="經度 121.462" inputmode="decimal"></div>
-      <div style="display:flex;gap:7px"><button class="btn ghost" style="margin:0;flex:1" onclick="fillGeo()">用目前定位帶入</button><button class="btn" style="flex:1" onclick="addPt()">儲存地點</button></div>
+      <input id="npName" class="minput" placeholder="幫它取個名（選填，例：公司）">
+      <button class="btn ghost" style="margin:0" onclick="addGeoPt()">📍 把目前位置存成地點</button>
     </div>
-    <div class="dlabel">自訂路徑（顯示在進階模式）</div>
+    ${Object.keys(DIST).map(cty=>`<div class="grp">${cty}（點一下就加入）</div>
+      <div class="dgrid">${DIST[cty].map(d=>`<span class="dchip" onclick="addDist('${d[0]}',${d[1]},${d[2]})">${d[0]}</span>`).join("")}</div>`).join("")}
+    <details class="adv"><summary>進階：手輸經緯度</summary>
+      <div class="dlist" style="margin-top:8px">
+        <div style="display:flex;gap:7px"><input id="npLat" class="minput" placeholder="緯度 25.013" inputmode="decimal"><input id="npLng" class="minput" placeholder="經度 121.462" inputmode="decimal"></div>
+        <button class="btn" style="width:100%" onclick="addPt()">儲存地點</button>
+      </div>
+    </details>
+    <div class="dlabel" id="mgrPaths">自訂路徑（顯示在進階模式）</div>
     <div class="dlist">
       ${prows}
       <div style="display:flex;gap:7px;align-items:center">
@@ -509,21 +543,25 @@ function pickLoc(id){
   LOC = id==="geo" ? {type:"geo"} : {type:"pt",id};
   lsSet("rw_loc",LOC); closeMgr(); loadHere(true);
 }
-function fillGeo(){
+function npName(){ return (document.getElementById("npName")?document.getElementById("npName").value:"").trim().replace(/['"<>`\\]/g,"").slice(0,12); }
+function addPoint(name,lat,lng){
+  if(CPTS.length>=MAX_CPTS){ alert(`自訂地點最多 ${MAX_CPTS} 個，先刪一個再加`); return false; }
+  if(!isFinite(lat)||!isFinite(lng)||lat<21||lat>26.5||lng<118||lng>123){ alert("座標看起來不在台灣範圍，請再確認"); return false; }
+  CPTS.push({id:"P"+Date.now(), name, lat:+(+lat).toFixed(4), lng:+(+lng).toFixed(4)});
+  lsSet("rw_custom_points",CPTS); renderMgr(); loadCustomPoints();
+  return true;
+}
+function addDist(dname,lat,lng){ addPoint(npName()||dname,lat,lng); }
+function addGeoPt(){
   if(!navigator.geolocation){ alert("此裝置不支援定位"); return; }
   navigator.geolocation.getCurrentPosition(pos=>{
-    const la=document.getElementById("npLat"), lo=document.getElementById("npLng");
-    if(la) la.value=pos.coords.latitude.toFixed(4);
-    if(lo) lo.value=pos.coords.longitude.toFixed(4);
-  },()=>alert("無法取得定位"),{timeout:8000});
+    addPoint(npName()||"我的地點",pos.coords.latitude,pos.coords.longitude);
+  },()=>alert("無法取得定位，請檢查權限"),{timeout:8000});
 }
 function addPt(){
-  const name=(document.getElementById("npName").value||"").trim().replace(/['"<>`\\]/g,"").slice(0,12);
-  const lat=+document.getElementById("npLat").value, lng=+document.getElementById("npLng").value;
-  if(!name){ alert("請填名稱"); return; }
-  if(!isFinite(lat)||!isFinite(lng)||lat<21||lat>26.5||lng<118||lng>123){ alert("經緯度看起來不在台灣範圍，請再確認"); return; }
-  CPTS.push({id:"P"+Date.now(), name, lat:+lat.toFixed(4), lng:+lng.toFixed(4)});
-  lsSet("rw_custom_points",CPTS); renderMgr(); loadCustomPoints();
+  const name=npName();
+  if(!name){ alert("手輸座標請順便取個名稱"); return; }
+  addPoint(name,+document.getElementById("npLat").value,+document.getElementById("npLng").value);
 }
 function delPt(id){
   CPTS=CPTS.filter(p=>p.id!==id); lsSet("rw_custom_points",CPTS);
