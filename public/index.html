@@ -126,6 +126,13 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
   .chip{font-size:10px;color:var(--muted);background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:3px 7px}
   .chip.w{color:var(--warn);border-color:var(--warn)}
   .warnbar{background:rgba(242,136,78,.12);border:1px solid var(--warn);color:var(--warn);border-radius:10px;padding:9px 13px;font-size:13px;font-weight:700;margin-top:14px;text-align:center}
+  .h3hint{font-size:12.5px;color:var(--i3);margin-top:8px;opacity:.9}
+  .possnote{font-weight:400;opacity:.85}
+  .minput{background:var(--bg2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px 12px;font-size:14px;width:100%;font-family:inherit}
+  .points{flex-wrap:wrap}
+  .points .pp{flex:1 1 21%;min-width:21%}
+  .locrow{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+  .mgrbtn{background:var(--card);border:1px dashed var(--line);color:var(--dim)}
 </style>
 </head>
 <body>
@@ -151,6 +158,7 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
 </div>
 <div id="detail" class="detail" hidden onclick="if(event.target===this)closeDetail()"></div>
 <div id="conf" class="detail" hidden onclick="if(event.target===this)closeConf()"></div>
+<div id="mgr" class="detail" hidden onclick="if(event.target===this)closeMgr()"></div>
 
 <script>
 const DATA_URL="/data.json";
@@ -204,12 +212,35 @@ let DATA=null, HERE=null, sel=0;
 let MODE=(function(){try{return localStorage.getItem("rw_mode")||"simple"}catch(e){return "simple"}})();
 function saveMode(m){try{localStorage.setItem("rw_mode",m)}catch(e){}}
 
+/* ---- 個人化狀態（只存這支手機 localStorage）：自訂點/自訂路徑/目前看哪裡 ---- */
+function lsGet(k,d){try{const v=JSON.parse(localStorage.getItem(k));return v==null?d:v}catch(e){return d}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+let CPTS=lsGet("rw_custom_points",[]), CPATHS=lsGet("rw_custom_paths",[]), LOC=lsGet("rw_loc",{type:"geo"});
+let CDATA={};   // 自訂點的 /at 快取
+
+/* ---- 校準表（Phase B）：讀週報 calibration，樣本≥50 才在可能性旁加註經驗機率 ---- */
+let CALIB=null;
+(async function(){
+  try{const d=await (await fetch("/shadow/latest")).json(); if(d&&d.calibration&&d.calibration.length){CALIB=d.calibration; if(DATA)renderActive();}}catch(e){}
+})();
+const CALIB_EDGES=[0.5,1,2,5,10,20];
+function calibBucket(q){ if(!(q>0))return "0"; let lo=0; for(const e of CALIB_EDGES){if(q<=e)return lo+"-"+e; lo=e;} return "20+"; }
+function calibNote(qpf,mm){
+  if(!CALIB||qpf==null||(+mm||0)>=0.2) return "";
+  const row=CALIB.find(r=>r.bucket===calibBucket(+qpf));
+  if(!row||row.n<50) return "";
+  const c=Math.round(row.rain02*10);
+  const t=c<=0?"過去經驗：不到 1 成會下":c>=10?"過去經驗：幾乎都會下":`過去經驗：約 ${c} 成會下`;
+  return ` <span class="possnote">· ${t}</span>`;
+}
+
 /* ---------------- 精簡模式 ---------------- */
 function renderSimple(){
   const v=document.getElementById("simpleView");
   if(!HERE||!HERE.here){
     v.innerHTML=`<div class="askcard"><p>開啟定位，看你「所在地」現在與稍後的雨況。</p>
       <button class="btn" onclick="initGeo(true)">開啟定位</button>
+      <button class="btn ghost" onclick="openMgr()">選其他地點</button>
       <button class="btn ghost" onclick="setMode('pro')">改用進階模式（看固定地點）</button></div>`;
     return;
   }
@@ -221,15 +252,18 @@ function renderSimple(){
     return `<div class="b" style="height:${ht}%;background:${mm<=0?'var(--line)':k.c}"></div>`}).join("");
   const why=(nc.why||[]).map(w=>`<span class="chip${/特報/.test(w)?' w':''}">${w}</span>`).join("");
   const warnLine=nc.warn?`<div class="warnline">⚠ ${h.county||""}${nc.warn}特報（全區）</div>`:"";
+  const h3Line=nc.h3_hint?`<div class="h3hint">${nc.h3_hint}</div>`:"";
   const poss=nc.possibility||"", possC=poss==="高"?"var(--i2)":poss==="中"?"var(--i3)":"var(--dry)";
   const fillNow=h.mm_hr<=0?0:Math.min(40,14+h.mm_hr/30*26);
   v.innerHTML=`<div class="wcard bigcard">
     <div class="wfill" style="height:${fillNow}%;background:${classify(h.mm_hr).c}${h.mm_hr<=0?';opacity:0':''}"></div>
     <div class="inner">
-      <div class="bigloc">所在地 · ${h.county||""}<div class="bigsub2">最近測站 ${h.name||""}</div></div>
+      <div class="locrow"><div class="bigloc">${HERE.label||"所在地"} · ${h.county||""}<div class="bigsub2">最近測站 ${h.name||""}</div></div>
+        <button class="cbtn" onclick="openMgr()">換地點</button></div>
       <div class="bigverdict" style="color:${tc};margin-top:auto">${nc.verdict||"—"}</div>
       <div class="bighint">${nc.sub||""}</div>
-      <span class="poss" style="color:${possC}"><span class="d" style="background:${possC}"></span>可能性 ${poss}</span>
+      ${h3Line}
+      <span class="poss" style="color:${possC}"><span class="d" style="background:${possC}"></span>可能性 ${poss}${calibNote(h.qpf_1h,h.mm_hr)}</span>
       ${warnLine}
       <div class="evlabel" style="margin-top:18px">接下來的雨勢</div>
       <div class="ev3">${evbars}</div>
@@ -260,16 +294,38 @@ function ppCard(label,p,onclick){
 }
 function renderPoints(){
   let html="";
-  if(HERE&&HERE.here) html+=ppCard("所在地",{mm_hr:HERE.here.mm_hr,plan:HERE.plan,nowcast:HERE.here.nowcast},`openDetailLL(${HERE.lat},${HERE.lng},'所在地')`);
+  if(HERE&&HERE.here) html+=ppCard(HERE.label||"所在地",{mm_hr:HERE.here.mm_hr,plan:HERE.plan,nowcast:HERE.here.nowcast},`openDetailLL(${HERE.lat},${HERE.lng},'${HERE.label||"所在地"}')`);
   html+=(DATA.points||[]).map(p=>ppCard(p.area,p,`openPoint('${p.id}')`)).join("");
+  html+=CPTS.map(p=>{const d=CDATA[p.id]||{mm_hr:0,plan:[]};
+    return ppCard(p.name,d,`openDetailLL(${p.lat},${p.lng},'${p.name}')`);}).join("");
+  html+=`<div class="pp wcard mgrbtn" onclick="openMgr()"><div class="inner"><div class="ar">自訂</div><div class="lv" style="color:var(--dim)">＋ 地點</div></div></div>`;
   document.getElementById("points").innerHTML=html;
 }
+/* 固定路徑 + 自訂路徑合併清單 */
+function allPaths(){
+  return [...((DATA&&DATA.paths)||[]), ...CPATHS.map(cp=>({id:cp.id,from:cp.from,to:cp.to,tag:"自訂",custom:true}))];
+}
+/* 任一點（固定或自訂）的展示資料 */
+function getPtView(id){
+  const f=((DATA&&DATA.points)||[]).find(x=>x.id===id);
+  if(f) return {name:f.area, mm_hr:f.mm_hr||0, nowcast:f.nowcast, plan:f.plan||[]};
+  const c=CPTS.find(x=>x.id===id), d=CDATA[id];
+  return {name:c?c.name:id, mm_hr:d?d.mm_hr||0:0, nowcast:d?d.nowcast:null, plan:d?d.plan||[]:[], loading:c&&!d};
+}
+function mergeBlocksFE(a,b){
+  const m={};
+  [...(a||[]),...(b||[])].forEach(blk=>{ const k=blk.from;
+    if(!m[k]||blk.pop>m[k].pop) m[k]={...blk};
+    else if(blk.mm_hr>m[k].mm_hr) m[k].mm_hr=blk.mm_hr; });
+  return Object.values(m).sort((x,y)=>x.from-y.from);
+}
 function renderTabs(){
-  const area={}; (DATA.points||[]).forEach(pt=>area[pt.id]=pt.area);
-  document.getElementById("tabs").innerHTML=(DATA.paths||[]).map((p,i)=>{
-    const alert=p.status!=="clear";
+  document.getElementById("tabs").innerHTML=allPaths().map((p,i)=>{
+    const alert=p.custom
+      ? Math.max(getPtView(p.from).mm_hr,getPtView(p.to).mm_hr)>=0.2
+      : p.status!=="clear";
     return `<div class="tab ${i===sel?'on':''} ${alert?'alert':''}" onclick="pick(${i})">
-      <div class="rt">${area[p.from]||p.from}→${area[p.to]||p.to}</div><div class="tg">${p.tag||''}</div></div>`;
+      <div class="rt">${nameOf(p.from)}→${nameOf(p.to)}</div><div class="tg">${p.tag||''}</div></div>`;
   }).join("");
 }
 function dayStrip(plan,dayWin){
@@ -282,28 +338,39 @@ function dayStrip(plan,dayWin){
   return `<div class="day lbl"><div class="dtrack"></div>${blocks}<div class="dnow" style="left:${L}%"></div><div class="dticks">${ticks}</div></div>`;
 }
 function renderCard(){
-  const p=DATA.paths[sel];
-  const area={}; (DATA.points||[]).forEach(pt=>area[pt.id]=pt.area);
-  const pf=(DATA.points||[]).find(x=>x.id===p.from)||{}, pt2=(DATA.points||[]).find(x=>x.id===p.to)||{};
+  const paths=allPaths();
+  if(sel>=paths.length) sel=0;
+  const p=paths[sel]; if(!p){ document.getElementById("card").innerHTML=""; return; }
+  const pf=getPtView(p.from), pt2=getPtView(p.to);
   let top=null; [pf.nowcast,pt2.nowcast].forEach(n=>{ if(n&&(!top||(n.tier||0)>(top.tier||0))) top=n; });
   let vtxt,vhint,vc;
-  if(!top||top.tier===0){ vtxt="整段無雨"; vhint="這條路徑現在與接下來都沒有雨"; vc="var(--dry)"; }
+  if(p.custom&&(pf.loading||pt2.loading)){ vtxt="讀取中…"; vhint="正在抓這條路徑兩端的即時資料"; vc="var(--muted)"; }
+  else if(!top||top.tier===0){ vtxt="整段無雨"; vhint="這條路徑現在與接下來 1 小時都沒有雨"; vc="var(--dry)"; }
   else {
     const word=WORD[top.tier]||"雨", raining=Math.max(pf.mm_hr||0,pt2.mm_hr||0)>=0.2;
     vtxt = raining?`出發就遇${word}`:`出發後不久遇${word}`;
     vhint=top.sub||"帶傘"; vc=TIERC[top.tier];
   }
-  const st=STATE_TXT[(p.plan&&p.plan.state)]||STATE_TXT.forecast;
+  let plan=p.plan;
+  if(p.custom){
+    const blocks=mergeBlocksFE(pf.plan,pt2.plan);
+    const raining=Math.max(pf.mm_hr||0,pt2.mm_hr||0)>=0.2;
+    const fut=blocks.some(b=>b.to>nowHr());
+    plan={state:raining?"confirmed":(blocks.length?(fut?"forecast":"cleared"):"cleared"),blocks};
+  }
+  const st=STATE_TXT[(plan&&plan.state)]||STATE_TXT.forecast;
   const warnB=top&&top.warn?`<div class="warnline" style="margin:10px 0 0">⚠ ${top.warn}特報（全區）</div>`:"";
+  const h3B=top&&top.h3_hint?`<div class="h3hint">${top.h3_hint}</div>`:"";
   document.getElementById("card").innerHTML=
     `<div class="card">
       <div class="verdict" style="color:${vc}">${vtxt}</div>
       <div class="vhint">${vhint}</div>
+      ${h3B}
       ${warnB}
-      <div class="meta"><span class="route">${area[p.from]||p.from}<span class="raq">→</span>${area[p.to]||p.to}</span>
+      <div class="meta"><span class="route">${nameOf(p.from)}<span class="raq">→</span>${nameOf(p.to)}</span>
         <span class="state"><span class="sd" style="background:${st.c}"></span><span style="color:${st.c}">${st.t}</span></span></div>
       <div class="daylabel">今日預報（每 3 小時 · 縣市級）</div>
-      ${dayStrip(p.plan,DATA.day_window)}
+      ${dayStrip(plan,DATA.day_window)}
     </div>`;
 }
 function pick(i){ sel=i; renderTabs(); renderCard(); }
@@ -333,7 +400,7 @@ function renderDetail(label,at){
     `<div class="dpanel">
       <div class="dhead"><div><div class="dttl">${label}</div><div class="dsub">${cty}${at.here?' · 最近站 '+at.here.name:''}</div></div>
         <button class="dclose" onclick="closeDetail()">✕</button></div>
-      ${(function(){const nc=at.here&&at.here.nowcast;if(!nc)return"";const c=TIERC[nc.tier]||"var(--txt)";const wl=nc.warn?`<div class="warnline" style="margin-top:8px">⚠ ${cty}${nc.warn}特報（全區）</div>`:"";return `<div style="font-size:21px;font-weight:800;color:${c};margin-top:4px">${nc.verdict}</div><div style="font-size:13px;color:var(--muted);margin-top:4px">${nc.sub||""}</div>${wl}`;})()}
+      ${(function(){const nc=at.here&&at.here.nowcast;if(!nc)return"";const c=TIERC[nc.tier]||"var(--txt)";const wl=nc.warn?`<div class="warnline" style="margin-top:8px">⚠ ${cty}${nc.warn}特報（全區）</div>`:"";const h3=nc.h3_hint?`<div class="h3hint">${nc.h3_hint}</div>`:"";return `<div style="font-size:21px;font-weight:800;color:${c};margin-top:4px">${nc.verdict}</div><div style="font-size:13px;color:var(--muted);margin-top:4px">${nc.sub||""}</div>${h3}${wl}`;})()}
       <div class="dlabel">今日預報（${cty}逐 3 小時）</div>
       <div class="rib">${segs}</div><div class="rhrs">${hrs}</div>
       <div class="dlabel">附近測站現況（mm/hr）</div>
@@ -372,16 +439,125 @@ async function openConf(){
   }
 }
 
-/* ---------------- geolocation ---------------- */
+/* ---------------- 主卡資料來源：定位或自訂點 ---------------- */
+async function fetchAt(lat,lng,label){
+  try{
+    const at=await (await fetch(`/at?lat=${lat}&lng=${lng}&n=8`,{cache:"no-store"})).json();
+    if(at&&!at.error){ HERE={lat,lng,label,here:at.here,plan:at.plan,nearby:at.nearby,day_window:at.day_window,qpf_time:at.qpf_time}; renderActive(); return true; }
+  }catch(e){}
+  return false;
+}
+function loadHere(force){
+  if(LOC.type==="pt"){
+    const p=CPTS.find(x=>x.id===LOC.id);
+    if(p){ fetchAt(p.lat,p.lng,p.name); return; }
+    LOC={type:"geo"}; lsSet("rw_loc",LOC);
+  }
+  initGeo(force);
+}
 function initGeo(force){
+  if(force){ LOC={type:"geo"}; lsSet("rw_loc",LOC); }
   if(!navigator.geolocation){ if(force) alert("此裝置不支援定位"); return; }
-  navigator.geolocation.getCurrentPosition(async pos=>{
-    const lat=pos.coords.latitude, lng=pos.coords.longitude;
-    try{
-      const at=await (await fetch(`/at?lat=${lat}&lng=${lng}&n=8`,{cache:"no-store"})).json();
-      if(at&&!at.error){ HERE={lat,lng,here:at.here,plan:at.plan,nearby:at.nearby,day_window:at.day_window,qpf_time:at.qpf_time}; renderActive(); }
-    }catch(e){}
+  navigator.geolocation.getCurrentPosition(pos=>{
+    fetchAt(pos.coords.latitude,pos.coords.longitude,"所在地");
   },()=>{ if(force) alert("無法取得定位，請檢查權限"); renderActive(); },{timeout:8000,maximumAge:300000});
+}
+
+/* ---------------- 地點與路徑管理（存 localStorage，換機不同步） ---------------- */
+function nameOf(id){
+  const f=((DATA&&DATA.points)||[]).find(x=>x.id===id); if(f) return f.area;
+  const c=CPTS.find(x=>x.id===id); return c?c.name:id;
+}
+function openMgr(){ renderMgr(); }
+function closeMgr(){ document.getElementById("mgr").hidden=true; }
+function renderMgr(){
+  const el=document.getElementById("mgr");
+  const rows=CPTS.map(p=>`<div class="drow"><div class="dname" style="cursor:pointer" onclick="pickLoc('${p.id}')">${p.name}${LOC.type==='pt'&&LOC.id===p.id?'（使用中）':''}<span class="ddist">${(+p.lat).toFixed(3)}, ${(+p.lng).toFixed(3)}</span></div>
+    <button class="dclose" style="width:32px;height:32px;font-size:12px" onclick="delPt('${p.id}')">刪</button></div>`).join("");
+  const opts=[...((DATA&&DATA.points)||[]).map(p=>`<option value="${p.id}">${p.area}</option>`),
+              ...CPTS.map(p=>`<option value="${p.id}">${p.name}</option>`)].join("");
+  const prows=CPATHS.map(cp=>`<div class="drow"><div class="dname">${nameOf(cp.from)} → ${nameOf(cp.to)}</div>
+    <button class="dclose" style="width:32px;height:32px;font-size:12px" onclick="delPath('${cp.id}')">刪</button></div>`).join("");
+  el.innerHTML=`<div class="dpanel">
+    <div class="dhead"><div><div class="dttl">地點與路徑</div><div class="dsub">自訂資料只存在這支手機（不同步）</div></div>
+      <button class="dclose" onclick="closeMgr()">✕</button></div>
+    <div class="dlabel">主卡看哪裡的雨？</div>
+    <div class="dlist">
+      <div class="drow"><div class="dname" style="cursor:pointer" onclick="pickLoc('geo')">📍 目前定位${LOC.type==='geo'?'（使用中）':''}</div></div>
+      ${rows}
+    </div>
+    <div class="dlabel">新增地點</div>
+    <div class="dlist">
+      <input id="npName" class="minput" placeholder="名稱（例：公司、小孩學校）">
+      <div style="display:flex;gap:7px"><input id="npLat" class="minput" placeholder="緯度 25.013" inputmode="decimal"><input id="npLng" class="minput" placeholder="經度 121.462" inputmode="decimal"></div>
+      <div style="display:flex;gap:7px"><button class="btn ghost" style="margin:0;flex:1" onclick="fillGeo()">用目前定位帶入</button><button class="btn" style="flex:1" onclick="addPt()">儲存地點</button></div>
+    </div>
+    <div class="dlabel">自訂路徑（顯示在進階模式）</div>
+    <div class="dlist">
+      ${prows}
+      <div style="display:flex;gap:7px;align-items:center">
+        <select id="pFrom" class="minput" style="flex:1">${opts}</select><span style="color:var(--dim)">→</span>
+        <select id="pTo" class="minput" style="flex:1">${opts}</select>
+        <button class="btn" onclick="addPath()">加</button>
+      </div>
+    </div>
+    <div class="dnote">固定示範點（中和／永和／內湖）是準度校準基線，不受自訂影響；自訂點不列入準度統計。</div>
+  </div>`;
+  el.hidden=false;
+}
+function pickLoc(id){
+  LOC = id==="geo" ? {type:"geo"} : {type:"pt",id};
+  lsSet("rw_loc",LOC); closeMgr(); loadHere(true);
+}
+function fillGeo(){
+  if(!navigator.geolocation){ alert("此裝置不支援定位"); return; }
+  navigator.geolocation.getCurrentPosition(pos=>{
+    const la=document.getElementById("npLat"), lo=document.getElementById("npLng");
+    if(la) la.value=pos.coords.latitude.toFixed(4);
+    if(lo) lo.value=pos.coords.longitude.toFixed(4);
+  },()=>alert("無法取得定位"),{timeout:8000});
+}
+function addPt(){
+  const name=(document.getElementById("npName").value||"").trim().replace(/['"<>`\\]/g,"").slice(0,12);
+  const lat=+document.getElementById("npLat").value, lng=+document.getElementById("npLng").value;
+  if(!name){ alert("請填名稱"); return; }
+  if(!isFinite(lat)||!isFinite(lng)||lat<21||lat>26.5||lng<118||lng>123){ alert("經緯度看起來不在台灣範圍，請再確認"); return; }
+  CPTS.push({id:"P"+Date.now(), name, lat:+lat.toFixed(4), lng:+lng.toFixed(4)});
+  lsSet("rw_custom_points",CPTS); renderMgr(); loadCustomPoints();
+}
+function delPt(id){
+  CPTS=CPTS.filter(p=>p.id!==id); lsSet("rw_custom_points",CPTS);
+  CPATHS=CPATHS.filter(cp=>cp.from!==id&&cp.to!==id); lsSet("rw_custom_paths",CPATHS);
+  delete CDATA[id];
+  if(LOC.type==="pt"&&LOC.id===id){ LOC={type:"geo"}; lsSet("rw_loc",LOC); loadHere(false); }
+  renderMgr(); renderActive();
+}
+function addPath(){
+  const from=document.getElementById("pFrom").value, to=document.getElementById("pTo").value;
+  if(!from||!to||from===to){ alert("起訖點要不同"); return; }
+  CPATHS.push({id:"CP"+Date.now(), from, to});
+  lsSet("rw_custom_paths",CPATHS); renderMgr(); loadCustomPoints(); renderActive();
+}
+function delPath(id){
+  CPATHS=CPATHS.filter(cp=>cp.id!==id); lsSet("rw_custom_paths",CPATHS);
+  sel=0; renderMgr(); renderActive();
+}
+/* 自訂點吃 /at（回傳含 nowcast），逐點抓、抓過快取 */
+let CLOADING=false;
+async function loadCustomPoints(){
+  if(CLOADING) return; CLOADING=true;
+  try{
+    const need=[...CPTS.filter(p=>!CDATA[p.id])];
+    for(const cp of CPATHS){ for(const id of [cp.from,cp.to]){ const p=CPTS.find(x=>x.id===id); if(p&&!CDATA[id]&&!need.includes(p)) need.push(p); } }
+    let got=false;
+    for(const p of need){
+      try{
+        const at=await (await fetch(`/at?lat=${p.lat}&lng=${p.lng}&n=4`,{cache:"no-store"})).json();
+        if(at&&!at.error&&at.here){ CDATA[p.id]={mm_hr:at.here.mm_hr,plan:at.plan||[],nowcast:at.here.nowcast,county:at.here.county,lat:p.lat,lng:p.lng}; got=true; }
+      }catch(e){}
+    }
+    if(got&&MODE==="pro") renderActive();
+  }finally{ CLOADING=false; }
 }
 
 /* ---------------- mode ---------------- */
@@ -402,9 +578,13 @@ function renderActive(){
     : `<button onclick="setMode('simple')">← 回精簡模式</button>`;
   if(simple){ renderSimple(); }
   else if(DATA){
-    const h=new Date().getHours(); const want=(h>=5&&h<12)?"上班":"下班";
-    const idx=(DATA.paths||[]).findIndex(p=>p.tag===want); sel=idx>=0?idx:0;
+    if(!renderActive._picked){   // 預設 tab 只在第一次自動挑，之後尊重使用者選擇
+      const h=new Date().getHours(); const want=(h>=5&&h<12)?"上班":"下班";
+      const idx=(DATA.paths||[]).findIndex(p=>p.tag===want); sel=idx>=0?idx:0;
+      renderActive._picked=true;
+    }
     renderPoints(); renderTabs(); renderCard();
+    loadCustomPoints();
   }
 }
 function render(d){
@@ -420,7 +600,7 @@ function render(d){
 (async function(){
   try{ const r=await fetch(DATA_URL,{cache:"no-store"}); if(!r.ok) throw 0; render(await r.json()); }
   catch(e){ render(MOCK); document.getElementById("ferr").innerHTML=`（示範資料：找不到 data.json）`; }
-  initGeo(false);
+  loadHere(false);
 })();
 
 if("serviceWorker" in navigator) window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));

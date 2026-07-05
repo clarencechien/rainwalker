@@ -84,6 +84,13 @@ export default {
       for (let i = 0; i < weeks * 7; i++) { const x = new Date(d); x.setUTCDate(d.getUTCDate() - i); days.push(`${x.getUTCFullYear()}/${z(x.getUTCMonth()+1)}/${z(x.getUTCDate())}`); }
       return json(await computeStats(env, days));
     }
+    // 校準表（Phase B）：近 N 週，QPF 分桶 → 實際下雨頻率
+    if (url.pathname === "/shadow/calib") {
+      const weeks = Math.min(8, +url.searchParams.get("weeks") || 4);
+      const d = new Date(Date.now() + 8 * 3600 * 1000), z = n => String(n).padStart(2, "0"), days = [];
+      for (let i = 0; i < weeks * 7; i++) { const x = new Date(d); x.setUTCDate(d.getUTCDate() - i); days.push(`${x.getUTCFullYear()}/${z(x.getUTCMonth()+1)}/${z(x.getUTCDate())}`); }
+      return json({ weeks, table: await calibrationFromDays(env, days) });
+    }
     // 生成+凍結週報（手動/補算）：?week=YYYY-Www，省略=當週
     if (url.pathname === "/shadow/gen") {
       return json(await weeklyReport(env, url.searchParams.get("week") || undefined));
@@ -193,22 +200,59 @@ async function shadowAppend(env) {
   const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));   // 全站，供 8 點綁最近站
   if (!stations.length) return;
   const qpf = await readQpf(env);
-  let fc = {}, warnings = {};
+  let fc = {}, warnings = {}, om = null;
   try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); } catch (e) {}
   try { warnings = await fetchWarnings(env.CWA_KEY); } catch (e) {}
+  try { om = await fetchOpenMeteo(pts); } catch (e) { om = null; }   // 挑戰者純影子欄位，失敗不擋主流程
+  const tsMin = parseLocalMin(ts);
   const fcLines = [], obLines = [];
-  for (const p of pts) {
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
     const st = nearestStation(stations, p.lat, p.lng); if (!st) continue;
     const county = st.county, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[county] || [];
     const nc = buildNowcast(st.mm_hr, st.r10, st.r1h, qv, plan, warnings[county], nowHr);
-    fcLines.push({ slot, pid: p.id, ts, qpf: qv, tier: nc.tier, poss: nc.possibility,
-      trend: nc.trend, verdict: nc.verdict, warn: nc.warn, plan3: nc.evidence[2],
-      now_mm: st.mm_hr, station: st.id, county });
+    const omv = omNext1h(om && om[i], tsMin);
+    fcLines.push({ slot, pid: p.id, ts, qpf: qv, tier: nc.tier, claim: nc.claim, tier3: nc.h3_tier,
+      poss: nc.possibility, trend: nc.trend, verdict: nc.verdict, warn: nc.warn, plan3: nc.evidence[2],
+      now_mm: st.mm_hr, om_mm: omv.om_mm, om_pop: omv.om_pop, station: st.id, county });
     obLines.push({ slot, pid: p.id, ts, p1h: st.r1h, p10: st.r10, valid: st.r1h != null });
   }
   await r2AppendLines(env, `shadow/fc/${datePath}.ndjson`, fcLines);
   await r2AppendLines(env, `shadow/ob/${datePath}.ndjson`, obLines);
-  return { slot, wrote: fcLines.length, bound: fcLines.map(l => `${l.pid}:${l.station}`) };
+  return { slot, wrote: fcLines.length, om: om ? "ok" : "none", bound: fcLines.map(l => `${l.pid}:${l.station}`) };
+}
+
+// ── Phase C 挑戰者：Open-Meteo（免費、無 key）── 純影子記錄，不進 fusion、不影響判語
+async function fetchOpenMeteo(pts) {
+  const lat = pts.map(p => p.lat).join(","), lon = pts.map(p => p.lng).join(",");
+  const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&hourly=precipitation,precipitation_probability&forecast_hours=4&timezone=Asia%2FTaipei`;
+  const r = await fetch(u, { headers: { accept: "application/json", "user-agent": "rainwalker" } });
+  if (!r.ok) throw new Error(`open-meteo HTTP ${r.status}`);
+  const j = await r.json();
+  return Array.isArray(j) ? j : [j];
+}
+// "2026-07-05T14:00" → 掛鐘分鐘數（兩邊都用台灣本地時間，不做時區換算）
+function parseLocalMin(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s || "");
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) / 60000 : null;
+}
+// Open-Meteo hourly 值＝該時刻「往前 1 小時」累積 → 用重疊比例加權出 [T, T+60min) 的降水
+function omNext1h(one, tsMin) {
+  const H = one && one.hourly;
+  if (!H || !H.time || tsMin == null) return { om_mm: null, om_pop: null };
+  let mm = 0, got = false, pop = null;
+  for (let i = 0; i < H.time.length; i++) {
+    const e = parseLocalMin(H.time[i]);          // 該桶覆蓋 (e-60, e]
+    if (e == null) continue;
+    const ovl = Math.min(e, tsMin + 60) - Math.max(e - 60, tsMin);
+    if (ovl <= 0) continue;
+    const p = H.precipitation ? +H.precipitation[i] : NaN;
+    if (isFinite(p)) { mm += p * ovl / 60; got = true; }
+    const pr = H.precipitation_probability ? +H.precipitation_probability[i] : NaN;
+    if (isFinite(pr)) pop = pop == null ? pr : Math.max(pop, pr);
+  }
+  return { om_mm: got ? +mm.toFixed(2) : null, om_pop: pop };
 }
 
 // ── 對答案 + 打分（join fc[T] ↔ ob[T+60min]）──────────────────
@@ -224,41 +268,104 @@ async function loadNdjson(env, key) {
     return (await o.text()).trim().split("\n").filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
   } catch (e) { return []; }
 }
-async function computeStats(env, dayPaths) {
+async function loadShadowDays(env, dayPaths) {
   const fc = [], ob = [];
   for (const dp of dayPaths) { fc.push(...await loadNdjson(env, `shadow/fc/${dp}.ndjson`)); ob.push(...await loadNdjson(env, `shadow/ob/${dp}.ndjson`)); }
   const obMap = new Map(); let maxSlot = "";
   for (const o of ob) { obMap.set(`${o.pid}|${o.slot}`, o); if (o.slot > maxSlot) maxSlot = o.slot; }
-  let expected = 0, settled = 0, gap = 0, invalid = 0, dirHit = 0, dirTot = 0, fa = 0, faDen = 0, ms = 0, msDen = 0;
-  const poss = { "高": [0,0], "中": [0,0], "低": [0,0] }; const qr = [];
-  for (const f of fc) {
-    const ans = slotPlus(f.slot, 60);
-    if (ans > maxSlot) continue;                 // 答案還沒到，不計入
-    expected++;
-    const o = obMap.get(`${f.pid}|${ans}`);
-    if (!o) { gap++; continue; }
-    if (!o.valid || o.p1h == null) { invalid++; continue; }
-    settled++;
-    const at = tierMm(o.p1h), pt = f.tier;
-    dirTot++; if (Math.abs(pt - at) <= 1) dirHit++;
+  return { fc, obMap, maxSlot };
+}
+// A3 打分視野分離：1h 主張對 ob[T+60]；3h 主張對 T+60/120/180 三筆的最大值（近似「3h 內是否下過」）
+async function computeStats(env, dayPaths) {
+  const { fc, obMap, maxSlot } = await loadShadowDays(env, dayPaths);
+  const mkS = () => ({ expected: 0, settled: 0, gap: 0, invalid: 0, dirHit: 0, dirTot: 0, fa: 0, faDen: 0, ms: 0, msDen: 0 });
+  const S1 = mkS(), S3 = mkS();
+  const score = (S, pt, at) => {
+    S.dirTot++; if (Math.abs(pt - at) <= 1) S.dirHit++;
     const pr = pt >= 2, ar = at >= 2;
-    if (pr) { faDen++; if (!ar) fa++; } else { msDen++; if (ar) ms++; }
-    if (poss[f.poss]) { poss[f.poss][1]++; if (ar) poss[f.poss][0]++; }
-    if ((+f.now_mm || 0) < 0.2 && +f.qpf > 0) qr.push(o.p1h / f.qpf);
+    if (pr) { S.faDen++; if (!ar) S.fa++; } else { S.msDen++; if (ar) S.ms++; }
+  };
+  const poss = { "高": [0,0], "中": [0,0], "低": [0,0] }; const qr = [];
+  const duel = { n: 0, qpf: { acc: 0, fa: 0, faDen: 0, ms: 0, msDen: 0 }, om: { acc: 0, fa: 0, faDen: 0, ms: 0, msDen: 0 } };
+  for (const f of fc) {
+    const claim = f.claim === "3h" ? "3h" : "1h";   // 舊資料無 claim 欄位 → 視為 1h 相容
+    const o1raw = obMap.get(`${f.pid}|${slotPlus(f.slot, 60)}`);
+    const o1 = (o1raw && o1raw.valid && o1raw.p1h != null) ? o1raw : null;
+    // 可能性三桶：可能性是 1h 語意，一律對 1h 實際
+    if (o1 && poss[f.poss]) { poss[f.poss][1]++; if (tierMm(o1.p1h) >= 2) poss[f.poss][0]++; }
+    if (o1 && (+f.now_mm || 0) < 0.2 && +f.qpf > 0) qr.push(o1.p1h / f.qpf);
+    // 源對決（Phase C）：同點同 slot，CWA-QPF vs Open-Meteo 各對 1h 實際（下雨=p1h≥0.2）
+    if (o1 && f.om_mm != null && f.qpf != null) {
+      duel.n++;
+      const ar = (+o1.p1h || 0) >= 0.2;
+      for (const [k, v] of [["qpf", +f.qpf], ["om", +f.om_mm]]) {
+        const d = duel[k], pr = v >= 0.2;
+        if (pr === ar) d.acc++;
+        if (pr) { d.faDen++; if (!ar) d.fa++; } else { d.msDen++; if (ar) d.ms++; }
+      }
+    }
+    if (claim === "1h") {
+      const ans = slotPlus(f.slot, 60);
+      if (ans > maxSlot) continue;               // 答案還沒到，不計入
+      S1.expected++;
+      const o = obMap.get(`${f.pid}|${ans}`);
+      if (!o) { S1.gap++; continue; }
+      if (!o.valid || o.p1h == null) { S1.invalid++; continue; }
+      S1.settled++;
+      score(S1, f.tier, tierMm(o.p1h));
+    } else {
+      if (slotPlus(f.slot, 180) > maxSlot) continue;
+      S3.expected++;
+      const os = [60, 120, 180].map(m => obMap.get(`${f.pid}|${slotPlus(f.slot, m)}`));
+      if (os.every(o => !o)) { S3.gap++; continue; }
+      const vals = os.filter(o => o && o.valid && o.p1h != null).map(o => +o.p1h || 0);
+      if (!vals.length) { S3.invalid++; continue; }
+      S3.settled++;
+      score(S3, f.tier3 != null ? f.tier3 : f.tier, tierMm(Math.max(...vals)));
+    }
   }
   const med = a => { if (!a.length) return null; const x = [...a].sort((m,n)=>m-n), k = x.length >> 1; return x.length % 2 ? x[k] : (x[k-1]+x[k]) / 2; };
   const r2 = v => v == null ? null : +v.toFixed(2);
   const rate = ab => ab[1] ? r2(ab[0]/ab[1]) : null;
+  const covOf = S => ({ expected: S.expected, settled: S.settled, missing: S.expected - S.settled, reasons: { cron_gap: S.gap, cwa_no_value: S.invalid } });
+  const scoresOf = S => ({
+    direction_hit: S.dirTot ? r2(S.dirHit/S.dirTot) : null,
+    false_alarm: S.faDen ? r2(S.fa/S.faDen) : null,
+    miss: S.msDen ? r2(S.ms/S.msDen) : null
+  });
+  const duelOf = d => ({ accuracy: duel.n ? r2(d.acc/duel.n) : null,
+    false_alarm: d.faDen ? r2(d.fa/d.faDen) : null, miss: d.msDen ? r2(d.ms/d.msDen) : null });
+  const scores_1h = { ...scoresOf(S1), qpf_bias_median: r2(med(qr)),
+    possibility: { "高": rate(poss["高"]), "中": rate(poss["中"]), "低": rate(poss["低"]) } };
   return {
-    coverage: { expected, settled, missing: expected - settled, reasons: { cron_gap: gap, cwa_no_value: invalid } },
-    scores: {
-      direction_hit: dirTot ? r2(dirHit/dirTot) : null,
-      false_alarm: faDen ? r2(fa/faDen) : null,
-      miss: msDen ? r2(ms/msDen) : null,
-      qpf_bias_median: r2(med(qr)),
-      possibility: { "高": rate(poss["高"]), "中": rate(poss["中"]), "低": rate(poss["低"]) }
-    }
+    coverage: covOf(S1), coverage_3h: covOf(S3),
+    scores_1h, scores_3h: scoresOf(S3),
+    scores: scores_1h,   // 舊欄位相容（= scores_1h）
+    source_duel: duel.n ? { samples: duel.n, qpf: duelOf(duel.qpf), open_meteo: duelOf(duel.om) } : null
   };
+}
+// ── Phase B 校準表：預報當下無雨的筆，按 QPF 分桶算實際下雨頻率（查表，不做 ML）──
+const CALIB_EDGES = [0.5, 1, 2, 5, 10, 20];
+function calibBucket(q) {
+  if (!(q > 0)) return "0";
+  let lo = 0;
+  for (const e of CALIB_EDGES) { if (q <= e) return `${lo}-${e}`; lo = e; }
+  return "20+";
+}
+async function calibrationFromDays(env, dayPaths) {
+  const { fc, obMap } = await loadShadowDays(env, dayPaths);
+  const acc = {};
+  for (const f of fc) {
+    if (f.qpf == null || (+f.now_mm || 0) >= 0.2) continue;
+    const o = obMap.get(`${f.pid}|${slotPlus(f.slot, 60)}`);
+    if (!o || !o.valid || o.p1h == null) continue;
+    const b = calibBucket(+f.qpf);
+    const a = acc[b] || (acc[b] = { n: 0, r02: 0, r1: 0 });
+    a.n++; if (+o.p1h >= 0.2) a.r02++; if (+o.p1h >= 1) a.r1++;
+  }
+  const order = ["0", "0-0.5", "0.5-1", "1-2", "2-5", "5-10", "10-20", "20+"];
+  return order.filter(b => acc[b]).map(b => ({ bucket: b, n: acc[b].n,
+    rain02: +(acc[b].r02 / acc[b].n).toFixed(2), rain1: +(acc[b].r1 / acc[b].n).toFixed(2) }));
 }
 // 對外口徑（§8.1）：定性為主、漏報露出、不丟裸 %
 function publicView(st) {
@@ -274,7 +381,9 @@ function publicView(st) {
 }
 function suggestions(st) {
   const out = [], q = st.scores.qpf_bias_median, m = st.scores.miss, P = st.scores.possibility;
-  if (q != null && q < 0.8) out.push(`QPF 中位高估 ${Math.round((1-q)*100)}% → 建議 tier 門檻 ×${q.toFixed(2)}（待人工批准）`);
+  // A4：qpf 係數下限 clamp（min 0.3）；比值≈0 不再輸出「×0.00」
+  if (q != null && q < 0.05) out.push("QPF 本週近乎全空報（實測/預報比值 ≈ 0）→ 建議檢視 QPF 觸發閾值與格點對位（待人工批准）");
+  else if (q != null && q < 0.8) out.push(`QPF 中位高估 ${Math.round((1-q)*100)}% → 建議 tier 門檻 ×${Math.max(0.3, q).toFixed(2)}（待人工批准）`);
   if (q != null && q > 1.25) out.push(`QPF 中位低估 ${Math.round((q-1)*100)}% → 建議 tier 門檻 ×${q.toFixed(2)}（待人工批准）`);
   if (m != null && m > 0.15) out.push(`漏報率 ${Math.round(m*100)}% 偏高 → 考慮放寬「有雨」判定或調高可能性靈敏度`);
   if (P["高"] != null && P["中"] != null && Math.abs(P["高"]-P["中"]) < 0.1) out.push("可能性「高」「中」實際下雨率接近 → 區分力不足，考慮重定義");
@@ -288,11 +397,11 @@ function isoWeekOf(d) {
   const fday = (firstThu.getUTCDay() + 6) % 7; firstThu.setUTCDate(firstThu.getUTCDate() - fday + 3);
   return { year: t.getUTCFullYear(), week: 1 + Math.round((t - firstThu) / (7 * 864e5)) };
 }
-function weekDayPaths(year, week) {
+function weekDayPaths(year, week, backWeeks = 0) {   // backWeeks>0：往前多含 N 週（給校準表拉長樣本）
   const jan4 = new Date(Date.UTC(year, 0, 4)); const j = (jan4.getUTCDay() + 6) % 7;
-  const mon = new Date(jan4); mon.setUTCDate(jan4.getUTCDate() - j + (week - 1) * 7);
+  const mon = new Date(jan4); mon.setUTCDate(jan4.getUTCDate() - j + (week - 1) * 7 - backWeeks * 7);
   const z = n => String(n).padStart(2, "0"); const out = [];
-  for (let i = 0; i < 7; i++) { const d = new Date(mon); d.setUTCDate(mon.getUTCDate() + i);
+  for (let i = 0; i < 7 * (backWeeks + 1); i++) { const d = new Date(mon); d.setUTCDate(mon.getUTCDate() + i);
     out.push(`${d.getUTCFullYear()}/${z(d.getUTCMonth()+1)}/${z(d.getUTCDate())}`); }
   return out;
 }
@@ -302,10 +411,16 @@ async function weeklyReport(env, weekStr) {
   else { const w = isoWeekOf(new Date(Date.now() + 8 * 3600 * 1000)); year = w.year; week = w.week; }
   const wk = `${year}-W${String(week).padStart(2, "0")}`;
   const st = await computeStats(env, weekDayPaths(year, week));
+  let calibration = [];
+  try { calibration = await calibrationFromDays(env, weekDayPaths(year, week, 3)); } catch (e) {}   // 近 4 週樣本
+  const st1 = { coverage: st.coverage, scores: st.scores_1h };   // public/suggestions 以 1h 為主口徑
   const report = {
     week: wk, generated: new Date(Date.now() + 8 * 3600 * 1000).toISOString().replace("Z", "+08:00"),
-    coverage: st.coverage, scores: st.scores, suggestions: suggestions(st),
-    "public": publicView(st), points: (CONFIG.shadow_points || []).map(p => p.id)
+    coverage: st.coverage, coverage_3h: st.coverage_3h,
+    scores: st.scores_1h, scores_1h: st.scores_1h, scores_3h: st.scores_3h,
+    source_duel: st.source_duel, calibration,
+    suggestions: suggestions(st1),
+    "public": publicView(st1), points: (CONFIG.shadow_points || []).map(p => p.id)
   };
   await env.BUCKET.put(`shadow/report/${wk}.json`, JSON.stringify(report), { httpMetadata: { contentType: "application/json" } });
   return report;
@@ -434,6 +549,8 @@ function actionHint(tier, wp) {
   if (tier >= 1) return "影響不大，帶把傘保險";
   return "放心出門";
 }
+// A2 可能性 gating 門檻（人工調參區；依 spec §6 絕不自動改）
+const GATE = { Q_HI: 1, PLAN_HEAVY: 8 };
 function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
   now = +now || 0;
   const trend = (r10 != null && r1h != null)
@@ -444,15 +561,22 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
   const wp = (warn && warn.length) ? warn[0] : null;
   const q = (qpf == null) ? null : +qpf;
   const raining = now >= 0.2;
-  let verdict, sub, poss, tier;
   const W = t => TIER_WORD[Math.max(1, Math.min(5, t))];   // 強度詞（至少「雨」）
 
+  // h3（稍後提示）：縣市 plan3 + 特報（縣市級、長視野）→ 只做副提示，不主導主判語、不抬可能性
+  let h3_tier = null, h3_hint = null;
+  if (nb) {
+    h3_tier = tierOf(plan3) || 1;
+    h3_hint = `稍後 ${nb.from} 時前後全區可能有${W(h3_tier)}${wp ? "（" + wp + "特報生效中）" : ""}`;
+  } else if (wp) {
+    h3_tier = 3;
+    h3_hint = `${wp}特報生效中，稍後留意天氣變化`;
+  }
+
+  // h1（1 小時主張）：只由 1h 內實證驅動＝現況 mm、趨勢 r10/r1h、QPF。主判語從這層出。
+  let verdict, sub, poss, tier, claim = "1h";
   if (raining) {
-    if (now < 1 && trend !== "falling" && (plan3 >= 8 || wp)) {
-      tier = tierOf(Math.max(plan3, q || 0)) || 4; poss = "中";
-      verdict = "還好，但要注意";
-      sub = wp ? `現在很小，但發布${wp}特報，恐轉${W(tier)}` : `現在很小，但預報轉${W(tier)}`;
-    } else if (trend === "rising" || (q != null && q > now + 1)) {
+    if (trend === "rising" || (q != null && q > now + 1)) {
       tier = tierOf(Math.max(now, q || now)); poss = "高";
       verdict = `正在下，還會更大`;
       sub = `雨勢增強中，逼近${W(tier)}${wp ? "（已發布" + wp + "特報）" : ""} · ${actionHint(tier, wp)}`;
@@ -463,22 +587,21 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
       tier = tierOf(now); poss = "高";
       verdict = `正在下${W(tier)}`; sub = `${wp ? "留意" + wp + "特報 · " : ""}${actionHint(tier, wp)}`;
     }
+  } else if (q != null && q > 0) {
+    // 可能性 gating：「高」必須 QPF≥門檻，或趨勢 rising 且地面已有雨跡
+    tier = tierOf(q);
+    poss = (q >= GATE.Q_HI || (trend === "rising" && now > 0)) ? "高" : "中";
+    verdict = tier >= 5 ? "馬上有豪雨" : tier >= 4 ? `等下會下${W(tier)}` : `等一下會下${W(tier)}`;
+    sub = `雷達估計約 1 小時內報到 · ${actionHint(tier, wp)}`;
+  } else if (h3_tier != null) {
+    // 1h 內無實證、只有縣市級長視野訊號：主判語誠實說「這 1 小時不會下」，稍後資訊放 h3_hint
+    tier = 0; claim = "3h";
+    poss = (plan3 >= GATE.PLAN_HEAVY || wp) ? "中" : "低";   // 特報/plan3 單獨在場：最多「中」
+    verdict = "這 1 小時應不會下";
+    sub = "未來 1 小時無雨勢移入，出門 OK，稍後再留意";
   } else {
-    if (q != null && q > 0) {
-      tier = tierOf(q); poss = "高";
-      verdict = tier >= 5 ? "馬上有豪雨" : tier >= 4 ? `等下會下${W(tier)}` : `等一下會下${W(tier)}`;
-      sub = `約半小時內報到，會下一陣子 · ${actionHint(tier, wp)}`;
-    } else if (plan3 > 0) {
-      tier = tierOf(plan3); poss = wp ? "高" : "中";
-      verdict = `稍後可能下${W(tier)}`;
-      sub = (nb ? `預報 ${nb.from} 時前後` : "今日稍後") + `有${W(tier)}${wp ? "，已發布" + wp + "特報" : ""}`;
-    } else if (wp) {
-      tier = 3; poss = "中";
-      verdict = "目前無雨，但要注意"; sub = `全區發布${wp}特報，留意天氣變化`;
-    } else {
-      tier = 0; poss = "低";
-      verdict = "接下來不會下"; sub = "未來1小時無雨勢移入，放心出門";
-    }
+    tier = 0; poss = "低";
+    verdict = "接下來不會下"; sub = "未來1小時無雨勢移入，放心出門";
   }
 
   const ev = [now, q != null ? q : 0, plan3];
@@ -487,7 +610,8 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
   if (q != null) why.push(`未來1時 QPF ${q} mm`);
   if (nb) why.push(`預報 ${nb.from}時${nb.pop ? " " + nb.pop + "%" : ""}`);
   if (wp) why.push(`⚠ ${wp}特報`);
-  return { verdict, sub, possibility: poss, tier, trend, evidence: ev, why, warn: wp };
+  return { verdict, sub, possibility: poss, tier, trend, evidence: ev, why, warn: wp,
+           h3_hint, h3_tier, claim };
 }
 
 // ── F-D0047-089 全台縣市逐3小時預報 ─────────────────────────────
