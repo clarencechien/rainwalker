@@ -15,7 +15,8 @@
 1. **Phase A**：`buildNowcast` 雙 horizon——主判語只由 1h 實證（now/趨勢/QPF）出，縣市 plan3+特報降為 `h3_hint` 副提示；可能性 gating（「高」須 QPF≥1mm 或正在下或 rising+地面有雨跡；特報/plan3 單獨最多「中」；門檻集中在 `GATE` 常數）；fc 行新增 `claim`(1h|3h)/`tier3`；`computeStats` 分 `scores_1h`/`scores_3h`（3h 主張對 T+60/120/180 最大值；舊資料無 claim 視為 1h 相容）；suggestion clamp（係數下限 ×0.30、比值≈0 改出「全空報」訊息）。
 2. **Phase B**：`calibrationFromDays` QPF 分桶（0/0.5/1/2/5/10/20/+∞）→ 實際下雨頻率（rain02/rain1）；端點 `/shadow/calib?weeks=N`；週報加 `calibration` 節（近 4 週樣本）；前端桶樣本≥50 時可能性旁加註「過去經驗：約 X 成會下」。
 3. **Phase C**：Open-Meteo 影子欄位 `om_mm`/`om_pop`（一次呼叫帶 8 點、hourly 重疊加權出未來 1h，cron 144 次/日）；週報 `source_duel` 節（CWA-QPF vs Open-Meteo，下雨=p1h≥0.2）。**使用者已拍板：Google 不綁卡、Apple 跳過。**
-4. **Phase D**：精簡模式「換地點」；地點管理面板＝雙北 41 行政區快選 chips＋「把目前位置存成地點」＋進階摺疊手輸經緯度（名稱選填）；自訂點上限 8、存 `rw_custom_points`；自訂路徑存 `rw_custom_paths`；進階模式 tabs 尾端「＋ 路徑」直達編輯；點卡列/tabs 改橫向滑動防破版；h3_hint 顯示於精簡卡/路徑卡/detail 浮層；固定盤 A/B/C+S1–S5 未動。SW cache 現為 **rain-v11**。
+4. **Phase D**：精簡模式「換地點」；地點管理面板＝雙北 41 行政區快選 chips＋「把目前位置存成地點」＋進階摺疊手輸經緯度（名稱選填）；自訂點上限 8、存 `rw_custom_points`；自訂路徑存 `rw_custom_paths`；進階模式 tabs 尾端「＋ 路徑」直達編輯；點卡列/tabs 改橫向滑動防破版；h3_hint 顯示於精簡卡/路徑卡/detail 浮層；固定盤 A/B/C+S1–S5 未動。SW cache 現為 **rain-v12**。
+   - **前景/後景修正（2026-07-05 晚，使用者截圖回報）**：燒杯水位 `.wfill` 疊在暗色小字（+1小時/+3小時、為什麼這樣判）後面吃掉對比。修法＝`.wfill` 明確 `z-index:0`、opacity **.42→.30**；`.bigcard .inner`/`.pp .inner` 文字加深色 text-shadow（.cbtn/.chip 例外）；`.evax` 字色 dim→muted。原則：**字永遠前景、水位永遠後景裝飾**，之後改卡片樣式勿破壞。
 5. **影子實驗②鄰站領先訊號**：fc 行記 `nb_r10`（10km 內鄰站最大 10 分雨強，排除本站；`neighborMaxR10`）；週報 `neighbor_signal` 節——本站乾的筆，門檻 0.5/1/2/5 各算 precision/recall，對照 base_rate。
 6. **影子實驗③QPF 取值半徑**：fc 行記 `qpf_w`（`qpfAt` gridFactor=4.5 ≈6km；fusion 現行 1.5 格不動）；週報 `qpf_radius` 節（窄/寬同筆對決 accuracy/誤報/漏報）。
 7. 預設拍板均已確認：雙 horizon 文案 OK、gating OK、Open-Meteo 先上、自訂點 localStorage OK。
@@ -25,7 +26,7 @@
 - `/shadow/peek?day=YYYYMMDD` → fc 最新行應有 `claim`/`om_mm`/`nb_r10`/`qpf_w` 欄位。
 - `/stats?weeks=1` → 應有 `scores_1h`/`scores_3h`/`source_duel`/`neighbor_signal`/`qpf_radius` 節。
 - `/shadow/calib?weeks=4` → 回分桶表 JSON（初期樣本少屬正常）。
-- 前端強刷（SW rain-v11）：精簡卡有黃色 h3_hint 小字；「換地點」開出行政區 chips；進階 tabs 尾端「＋ 路徑」；加 >4 個點時點卡列可橫向滑動。
+- 前端強刷（SW rain-v12）：精簡卡有黃色 h3_hint 小字；「換地點」開出行政區 chips；進階 tabs 尾端「＋ 路徑」；加 >4 個點時點卡列可橫向滑動；下雨時水位升高後「+1 小時/+3 小時/為什麼這樣判」等字仍清晰（字在前景）。
 
 ### 下次 session 的 TODO
 1. **等樣本，約四週後（W31±）裁決**——全部 human-on-the-loop，看數據人工改常數，絕不自動：

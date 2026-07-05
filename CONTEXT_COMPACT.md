@@ -26,7 +26,7 @@
 ## 5. UI（public/index.html，單檔）
 - 雙模式 localStorage：**精簡（預設，長輩）**=hero 大卡：nowcast 大字判語(tier色)+sub+「可能性 高/中/低」膠囊+「⚠ {縣市}{特報}特報（全區）」獨立行（**縣市級特報與在地判語分層，避免『毛毛雨 vs 豪雨特報』矛盾**）+3 格證據 bar（現在/+1h/+3h）+「▸ 為什麼這樣判？」收合 chips。
 - **進階**：4 點卡（燒杯水位=當下實測、**label=fusion tier**：當下≥tier→強度詞、否則「轉X」）+ 路徑 tab（判語含時間感「出發就遇X/出發後不久遇X」+特報行）+ detail 浮層（/at nowcast）+ 頂部特報橫幅（兩模式共用）。
-- 燒杯 `.wfill` **半透明 opacity .42**（手機蓋到格子也透）+圓潤水面+封頂；`.detail[hidden]{display:none}` 是歷史坑（display:flex 蓋掉 hidden 會凍結頁面）勿破壞。
+- 燒杯 `.wfill` **半透明 opacity .30＋z-index:0**（2026-07-05 由 .42 調降：水位升高會吃掉暗色小字對比；字必須永遠前景＝`.inner` z-index:2＋text-shadow）+圓潤水面+封頂；`.detail[hidden]{display:none}` 是歷史坑（display:flex 蓋掉 hidden 會凍結頁面）勿破壞。
 - 右上「準度」按鈕→面板：讀 `/shadow/latest` 的 `public.*`（定性結論/約X成/漏報詞/樣本數/下載週報鈕）。樣本<20 顯「資料不足」。
 - 改前端後 **sw.js CACHE 版本必 bump**（現 rain-v9）。
 
