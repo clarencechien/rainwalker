@@ -13,7 +13,8 @@
 node tests/offline.test.mjs      # 72 個離線合成案例（fusion/打分/校準/回測）
 ```
 改 worker：`sed 's/^import CONFIG.*/const CONFIG={};/' src/index.js > /tmp/w.mjs && node --check /tmp/w.mjs`
-改前端：抽出 `<script>` 做 `node --check`，並 **bump `public/sw.js` 的 CACHE 版本**（現為 rain-v11）。
+改前端：抽出 `<script>` 做 `node --check`，並 **bump `public/sw.js` 的 CACHE 版本**（現為 rain-v12）。
+UI 鐵律：燒杯水位 `.wfill` 永遠後景（z-index:0、opacity .30），卡片文字永遠前景（`.inner` z-index:2＋text-shadow）——改卡片樣式前先看 HANDOFF「前景/後景修正」。
 
 ## 主要路由
 `/`（UI）、`/data.json`、`/at?lat=&lng=&n=`、`/refresh`、`/stats?weeks=`、`/shadow/latest`、`/shadow/gen?week=`、`/shadow/file?week=`、`/shadow/calib?weeks=`、`/shadow/peek?day=`（探針）
