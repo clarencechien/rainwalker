@@ -212,7 +212,10 @@ async function shadowAppend(env) {
     const county = st.county, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[county] || [];
     const nc = buildNowcast(st.mm_hr, st.r10, st.r1h, qv, plan, warnings[county], nowHr);
     const omv = omNext1h(om && om[i], tsMin);
-    fcLines.push({ slot, pid: p.id, ts, qpf: qv, tier: nc.tier, claim: nc.claim, tier3: nc.h3_tier,
+    // 影子實驗欄位（不進 fusion）：qpf_w=寬半徑 QPF、nb_r10=10km 鄰站最大 10 分雨強
+    const qw = qpfAt(qpf, p.lat, p.lng, 4.5);
+    const nb = neighborMaxR10(stations, p.lat, p.lng, st.id, 10);
+    fcLines.push({ slot, pid: p.id, ts, qpf: qv, qpf_w: qw, nb_r10: nb, tier: nc.tier, claim: nc.claim, tier3: nc.h3_tier,
       poss: nc.possibility, trend: nc.trend, verdict: nc.verdict, warn: nc.warn, plan3: nc.evidence[2],
       now_mm: st.mm_hr, om_mm: omv.om_mm, om_pop: omv.om_pop, station: st.id, county });
     obLines.push({ slot, pid: p.id, ts, p1h: st.r1h, p10: st.r10, valid: st.r1h != null });
@@ -286,7 +289,13 @@ async function computeStats(env, dayPaths) {
     if (pr) { S.faDen++; if (!ar) S.fa++; } else { S.msDen++; if (ar) S.ms++; }
   };
   const poss = { "高": [0,0], "中": [0,0], "低": [0,0] }; const qr = [];
-  const duel = { n: 0, qpf: { acc: 0, fa: 0, faDen: 0, ms: 0, msDen: 0 }, om: { acc: 0, fa: 0, faDen: 0, ms: 0, msDen: 0 } };
+  const mkD = () => ({ acc: 0, fa: 0, faDen: 0, ms: 0, msDen: 0 });
+  const duel = { n: 0, qpf: mkD(), om: mkD() };
+  // 影子實驗②：鄰站領先訊號（本站乾時，nb_r10≥門檻 對 1h 後下雨的 precision/recall）
+  const NB_TH = [0.5, 1, 2, 5];
+  const nbs = { n: 0, rain: 0, th: NB_TH.map(t => ({ t, pred: 0, predRain: 0 })) };
+  // 影子實驗③：QPF 取值半徑 窄(現行 1.5 格) vs 寬(4.5 格) 同筆對決
+  const qra = { n: 0, narrow: mkD(), wide: mkD() };
   for (const f of fc) {
     const claim = f.claim === "3h" ? "3h" : "1h";   // 舊資料無 claim 欄位 → 視為 1h 相容
     const o1raw = obMap.get(`${f.pid}|${slotPlus(f.slot, 60)}`);
@@ -295,13 +304,26 @@ async function computeStats(env, dayPaths) {
     if (o1 && poss[f.poss]) { poss[f.poss][1]++; if (tierMm(o1.p1h) >= 2) poss[f.poss][0]++; }
     if (o1 && (+f.now_mm || 0) < 0.2 && +f.qpf > 0) qr.push(o1.p1h / f.qpf);
     // 源對決（Phase C）：同點同 slot，CWA-QPF vs Open-Meteo 各對 1h 實際（下雨=p1h≥0.2）
+    const mark = (d, v, ar) => {
+      const pr = v >= 0.2;
+      if (pr === ar) d.acc++;
+      if (pr) { d.faDen++; if (!ar) d.fa++; } else { d.msDen++; if (ar) d.ms++; }
+    };
     if (o1 && f.om_mm != null && f.qpf != null) {
       duel.n++;
       const ar = (+o1.p1h || 0) >= 0.2;
-      for (const [k, v] of [["qpf", +f.qpf], ["om", +f.om_mm]]) {
-        const d = duel[k], pr = v >= 0.2;
-        if (pr === ar) d.acc++;
-        if (pr) { d.faDen++; if (!ar) d.fa++; } else { d.msDen++; if (ar) d.ms++; }
+      mark(duel.qpf, +f.qpf, ar); mark(duel.om, +f.om_mm, ar);
+    }
+    // 影子實驗②③只看「本站當下乾」的筆（要驗的就是無雨→有雨的轉折）
+    if (o1 && (+f.now_mm || 0) < 0.2) {
+      const ar = (+o1.p1h || 0) >= 0.2;
+      if (f.nb_r10 != null) {
+        nbs.n++; if (ar) nbs.rain++;
+        for (const b of nbs.th) if (+f.nb_r10 >= b.t) { b.pred++; if (ar) b.predRain++; }
+      }
+      if (f.qpf != null && f.qpf_w != null) {
+        qra.n++;
+        mark(qra.narrow, +f.qpf, ar); mark(qra.wide, +f.qpf_w, ar);
       }
     }
     if (claim === "1h") {
@@ -333,7 +355,7 @@ async function computeStats(env, dayPaths) {
     false_alarm: S.faDen ? r2(S.fa/S.faDen) : null,
     miss: S.msDen ? r2(S.ms/S.msDen) : null
   });
-  const duelOf = d => ({ accuracy: duel.n ? r2(d.acc/duel.n) : null,
+  const duelOf = (d, n) => ({ accuracy: n ? r2(d.acc/n) : null,
     false_alarm: d.faDen ? r2(d.fa/d.faDen) : null, miss: d.msDen ? r2(d.ms/d.msDen) : null });
   const scores_1h = { ...scoresOf(S1), qpf_bias_median: r2(med(qr)),
     possibility: { "高": rate(poss["高"]), "中": rate(poss["中"]), "低": rate(poss["低"]) } };
@@ -341,7 +363,14 @@ async function computeStats(env, dayPaths) {
     coverage: covOf(S1), coverage_3h: covOf(S3),
     scores_1h, scores_3h: scoresOf(S3),
     scores: scores_1h,   // 舊欄位相容（= scores_1h）
-    source_duel: duel.n ? { samples: duel.n, qpf: duelOf(duel.qpf), open_meteo: duelOf(duel.om) } : null
+    source_duel: duel.n ? { samples: duel.n, qpf: duelOf(duel.qpf, duel.n), open_meteo: duelOf(duel.om, duel.n) } : null,
+    // 影子實驗②：乾→雨轉折上，鄰站訊號有多少預測力（precision=喊了多準、recall=漏報接住多少）
+    neighbor_signal: nbs.n ? { samples: nbs.n, base_rate: r2(nbs.rain / nbs.n),
+      thresholds: nbs.th.map(b => ({ th: b.t, n: b.pred,
+        precision: b.pred ? r2(b.predRain / b.pred) : null,
+        recall: nbs.rain ? r2(b.predRain / nbs.rain) : null })) } : null,
+    // 影子實驗③：QPF 窄/寬半徑誰的誤報/漏報曲線好
+    qpf_radius: qra.n ? { samples: qra.n, narrow: duelOf(qra.narrow, qra.n), wide: duelOf(qra.wide, qra.n) } : null
   };
 }
 // ── Phase B 校準表：預報當下無雨的筆，按 QPF 分桶算實際下雨頻率（查表，不做 ML）──
@@ -418,7 +447,7 @@ async function weeklyReport(env, weekStr) {
     week: wk, generated: new Date(Date.now() + 8 * 3600 * 1000).toISOString().replace("Z", "+08:00"),
     coverage: st.coverage, coverage_3h: st.coverage_3h,
     scores: st.scores_1h, scores_1h: st.scores_1h, scores_3h: st.scores_3h,
-    source_duel: st.source_duel, calibration,
+    source_duel: st.source_duel, neighbor_signal: st.neighbor_signal, qpf_radius: st.qpf_radius, calibration,
     suggestions: suggestions(st1),
     "public": publicView(st1), points: (CONFIG.shadow_points || []).map(p => p.id)
   };
@@ -452,13 +481,25 @@ async function readQpf(env) {
   try { const o = await env.BUCKET.get("qpf.json"); return o ? JSON.parse(await o.text()) : null; }
   catch (e) { return null; }
 }
-// 取某點未來1小時 QPF（mm）：取附近 ~1.5 格內最大雨格；qpf 載入但附近無雨格回 0；未載入回 null
-function qpfAt(qpf, lat, lng) {
+// 取某點未來1小時 QPF（mm）：取附近 gridFactor 格內最大雨格；qpf 載入但附近無雨格回 0；未載入回 null
+// gridFactor 預設 1.5（≈2km，現行 fusion 用）；影子實驗另以 4.5（≈6km）記 qpf_w，容忍雷達格點位移誤差
+function qpfAt(qpf, lat, lng, gridFactor = 1.5) {
   if (!qpf || !qpf.cells) return null;
-  const r = (qpf.res || 0.0125) * 1.5;
+  const r = (qpf.res || 0.0125) * gridFactor;
   let best = 0;
   for (const c of qpf.cells) {
     if (Math.abs(c.lat - lat) <= r && Math.abs(c.lng - lng) <= r && c.mm > best) best = c.mm;
+  }
+  return best;
+}
+// 鄰站領先訊號（影子實驗）：radiusKm 內（排除本站）r10 最大值；雨帶移入時鄰站先跳
+// 回 null=範圍內無有效 r10；回 0=鄰站全乾
+function neighborMaxR10(stations, lat, lng, excludeId, radiusKm = 10) {
+  let best = null;
+  for (const s of stations) {
+    if (s.id === excludeId || s.r10 == null) continue;
+    if (haversine(lat, lng, s.lat, s.lng) > radiusKm) continue;
+    if (best == null || s.r10 > best) best = s.r10;
   }
   return best;
 }
