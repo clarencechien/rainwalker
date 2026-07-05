@@ -1,6 +1,22 @@
-# rainwalker — 單一 Worker（UI + data.json + cron）
+# rainwalker 雨縫 — 單一 Worker（UI + data.json + cron）
 
-全部手動 web 操作、無需 CLI。一個 Worker 同時：服務 UI、用 R2 出 `/data.json`、跑 cron 寫 R2。
+雙北通勤降雨決策 PWA：五源融合（雨量站現況/趨勢、雷達 QPF、縣市 3h 預報、特報）→ 一句有立場、可行動、敢公開準度的判語。全部手動 web 操作、無需 CLI。一個 Worker 同時：服務 UI、用 R2 出 `/data.json`、跑 cron 寫 R2 + shadow log 自動對答案。
+
+## 系統現況（2026-07-05）
+- **接手開發前必讀：`HANDOFF.md` 開頭「接手快照」**（已完成事項＋TODO＋驗收清單），背景見 `CONTEXT_COMPACT.md`。
+- 判語為雙 horizon：主判語只由 1h 實證出（現況/趨勢/QPF），縣市預報+特報降為「稍後…」副提示（`h3_hint`），可能性有 gating。
+- shadow log 每 10 分對 8 個固定點記錄預報與實測、自動對答案；週報含 `scores_1h`/`scores_3h`/`calibration`（QPF 校準表）/`source_duel`（vs Open-Meteo）/`neighbor_signal`（鄰站領先訊號實驗）/`qpf_radius`（取值半徑實驗）。影子實驗一律不進 fusion，四週看數據人工拍板。
+- UI：精簡（預設）/進階雙模式；換地點＝雙北行政區快選或目前定位；自訂點/路徑存 localStorage（上限 8 點，不進 shadow 統計）。
+
+## 開發驗證（改完必跑）
+```
+node tests/offline.test.mjs      # 72 個離線合成案例（fusion/打分/校準/回測）
+```
+改 worker：`sed 's/^import CONFIG.*/const CONFIG={};/' src/index.js > /tmp/w.mjs && node --check /tmp/w.mjs`
+改前端：抽出 `<script>` 做 `node --check`，並 **bump `public/sw.js` 的 CACHE 版本**（現為 rain-v11）。
+
+## 主要路由
+`/`（UI）、`/data.json`、`/at?lat=&lng=&n=`、`/refresh`、`/stats?weeks=`、`/shadow/latest`、`/shadow/gen?week=`、`/shadow/file?week=`、`/shadow/calib?weeks=`、`/shadow/peek?day=`（探針）
 
 ## 重點
 - `wrangler.toml` 必須在 **repo 根目錄**（Cloudflare 連動 build 才會套用 assets / cron / R2）。
@@ -26,5 +42,5 @@ Worker → Settings → Variables and Secrets → Add：
 - R2：Worker → Settings → Bindings → Add → R2 bucket → 變數名 `BUCKET` → 選 `rainwalker`。
 - Cron：Worker → Settings → Triggers → Cron Triggers → Add → `*/10 * * * *`。
 
-## 下一步：邊寫邊驗
-把 `src/index.js` 的 `buildData()` 四個 TODO 補上真資料。`cwaFetch()` 已封好 datastore/fileapi。
+## 下一步
+見 `HANDOFF.md`「接手快照」的 TODO：等 shadow 樣本累積約四週（W31±）後，依 `source_duel`/`neighbor_signal`/`qpf_radius`/`calibration` 數據人工裁決各實驗去留；housekeeping（刪舊 log 留週報）尚未實作。

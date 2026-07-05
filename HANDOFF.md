@@ -1,8 +1,47 @@
 # HANDOFF — rainwalker 準度改造工單（給 Claude Code）
 
-> 先讀同目錄 `CONTEXT_COMPACT.md`（系統現況+對話壓縮）與 `SHADOWLOG_SPEC.md`（shadow log 規格）。
+> 先讀同目錄 `CONTEXT_COMPACT.md`（系統現況+對話壓縮）。
 > 語言：一律台灣正體中文（介面文案、註解、回覆）。
 > 部署：使用者**只用 GitHub → Cloudflare Workers Builds（web UI）**，**禁止**要求 wrangler CLI。改完 code 交付即可，部署驗證由使用者操作。
+
+---
+
+## ⚡ 接手快照（2026-07-05 session 已完成本工單；下方§1–§7 為原工單，留供對照）
+
+**Phase A–D＋兩個追加影子實驗已全部實作**（branch `claude/rainwalker-phases-impl-hquc7d`）。
+離線測試：`node tests/offline.test.mjs`（72 案例，含 W27 情境回測）——改 worker/前端後必跑。
+
+### 已完成（2026-07-05）
+1. **Phase A**：`buildNowcast` 雙 horizon——主判語只由 1h 實證（now/趨勢/QPF）出，縣市 plan3+特報降為 `h3_hint` 副提示；可能性 gating（「高」須 QPF≥1mm 或正在下或 rising+地面有雨跡；特報/plan3 單獨最多「中」；門檻集中在 `GATE` 常數）；fc 行新增 `claim`(1h|3h)/`tier3`；`computeStats` 分 `scores_1h`/`scores_3h`（3h 主張對 T+60/120/180 最大值；舊資料無 claim 視為 1h 相容）；suggestion clamp（係數下限 ×0.30、比值≈0 改出「全空報」訊息）。
+2. **Phase B**：`calibrationFromDays` QPF 分桶（0/0.5/1/2/5/10/20/+∞）→ 實際下雨頻率（rain02/rain1）；端點 `/shadow/calib?weeks=N`；週報加 `calibration` 節（近 4 週樣本）；前端桶樣本≥50 時可能性旁加註「過去經驗：約 X 成會下」。
+3. **Phase C**：Open-Meteo 影子欄位 `om_mm`/`om_pop`（一次呼叫帶 8 點、hourly 重疊加權出未來 1h，cron 144 次/日）；週報 `source_duel` 節（CWA-QPF vs Open-Meteo，下雨=p1h≥0.2）。**使用者已拍板：Google 不綁卡、Apple 跳過。**
+4. **Phase D**：精簡模式「換地點」；地點管理面板＝雙北 41 行政區快選 chips＋「把目前位置存成地點」＋進階摺疊手輸經緯度（名稱選填）；自訂點上限 8、存 `rw_custom_points`；自訂路徑存 `rw_custom_paths`；進階模式 tabs 尾端「＋ 路徑」直達編輯；點卡列/tabs 改橫向滑動防破版；h3_hint 顯示於精簡卡/路徑卡/detail 浮層；固定盤 A/B/C+S1–S5 未動。SW cache 現為 **rain-v11**。
+5. **影子實驗②鄰站領先訊號**：fc 行記 `nb_r10`（10km 內鄰站最大 10 分雨強，排除本站；`neighborMaxR10`）；週報 `neighbor_signal` 節——本站乾的筆，門檻 0.5/1/2/5 各算 precision/recall，對照 base_rate。
+6. **影子實驗③QPF 取值半徑**：fc 行記 `qpf_w`（`qpfAt` gridFactor=4.5 ≈6km；fusion 現行 1.5 格不動）；週報 `qpf_radius` 節（窄/寬同筆對決 accuracy/誤報/漏報）。
+7. 預設拍板均已確認：雙 horizon 文案 OK、gating OK、Open-Meteo 先上、自訂點 localStorage OK。
+
+### 部署後驗收（使用者 web UI 部署後打）
+- `/refresh` → 回傳 `shadow.om` 應為 `"ok"`。
+- `/shadow/peek?day=YYYYMMDD` → fc 最新行應有 `claim`/`om_mm`/`nb_r10`/`qpf_w` 欄位。
+- `/stats?weeks=1` → 應有 `scores_1h`/`scores_3h`/`source_duel`/`neighbor_signal`/`qpf_radius` 節。
+- `/shadow/calib?weeks=4` → 回分桶表 JSON（初期樣本少屬正常）。
+- 前端強刷（SW rain-v11）：精簡卡有黃色 h3_hint 小字；「換地點」開出行政區 chips；進階 tabs 尾端「＋ 路徑」；加 >4 個點時點卡列可橫向滑動。
+
+### 下次 session 的 TODO
+1. **等樣本，約四週後（W31±）裁決**——全部 human-on-the-loop，看數據人工改常數，絕不自動：
+   - `source_duel`：Open-Meteo 贏 → 討論進 fusion 方式（Type-I 偏向建議兩源 OR）；輸 → 維持現狀，Google 免議。
+   - `neighbor_signal`：某門檻 precision 明顯高於 base_rate 且 recall 可觀 → 接進 gating 當「抬可能性」第四條件。
+   - `qpf_radius`：寬半徑漏報降、誤報可接受 → 人工改 fusion 的 gridFactor。
+   - `calibration`：桶樣本≥50 前端自動顯示，無需動作；可順手檢視桶界是否要調。
+2. **W28 新週報第一週檢查**：`scores_1h.false_alarm` 應大幅低於 W27 的 0.99；可能性「高」實際下雨率應回升；`scores_3h` 開始有值。新舊資料混跑（舊行無 claim）屬正常。
+3. **housekeeping 未實作**（spec 已寫）：刪舊 shadow 日誌只留週報，等週報穩定幾輪再做。
+4. `SHADOWLOG_SPEC.md` 不在 repo（CONTEXT 有引用但未上傳）——下次請使用者提供，或依 `CONTEXT_COMPACT.md` §6 補寫入庫。
+5. 前端校準註記依賴 `/shadow/latest` 凍結週報的 `calibration` 節——W28 起產出的週報才有此節。
+
+### 工程紀律（不變，細節見§7）
+一次一針；改 worker 或前端後 `node --check`＋`node tests/offline.test.mjs`；改前端必 bump `public/sw.js` CACHE；純函式先離線合成案例再交付；臨時探針用完即刪（現存僅 `/shadow/peek`）；**絕不自動改融合門檻**。
+
+---
 
 ## 0. 背景一句話
 雨縫 = 雙北通勤降雨決策 PWA（五源融合→一句判語）。已上線含 shadow log 自動對答案系統。**第一週成績卷（W27）暴露結構性問題：誤報率 99%、「可能性高」實際下雨率 2%**。本工單 = 修判斷邏輯 + 建校準表 + 引入挑戰者資料源 + UI 個人化。
