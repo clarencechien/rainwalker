@@ -8,7 +8,7 @@ import fs from "node:fs";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
 const cfg = fs.readFileSync(new URL("../src/points.json", import.meta.url), "utf8");
 const body = src.replace(/^import CONFIG.*$/m, `const CONFIG=${cfg};`) +
-  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm };\n";
+  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10 };\n";
 const W = await import("data:text/javascript;base64," + Buffer.from(body).toString("base64"));
 
 let pass = 0, fail = 0;
@@ -173,6 +173,53 @@ console.log("\n[6] omNext1h 重疊加權");
   const t2 = W.parseLocalMin("2026-07-05T14:00");
   const r2 = W.omNext1h(one, t2);
   ok(Math.abs(r2.om_mm - 6) < 0.01, "整點對齊：恰好一桶 6.0", r2.om_mm);
+}
+
+// ── 6b. 影子實驗②③：qpfAt 半徑 / 鄰站訊號 / 週報評分節 ───────
+console.log("\n[6b] 影子實驗：QPF 半徑與鄰站領先訊號");
+{
+  // qpfAt 半徑：雨格離點 3 格遠 → 窄(1.5格)漏接、寬(4.5格)接到
+  const res = 0.0125, lat0 = 25.0, lng0 = 121.5;
+  const qpf = { res, cells: [{ lat: lat0 + 3 * res, lng: lng0, mm: 5 }] };
+  ok(W.qpfAt(qpf, lat0, lng0) === 0, "窄半徑：3 格外雨格接不到", W.qpfAt(qpf, lat0, lng0));
+  ok(W.qpfAt(qpf, lat0, lng0, 4.5) === 5, "寬半徑：接到 5mm", W.qpfAt(qpf, lat0, lng0, 4.5));
+  ok(W.qpfAt(null, lat0, lng0, 4.5) === null, "QPF 未載入 → null");
+
+  // neighborMaxR10：排除本站、10km 截斷、全乾回 0、無有效值回 null
+  const stns = [
+    { id: "SELF", lat: lat0, lng: lng0, r10: 8 },                 // 本站，要排除
+    { id: "N1", lat: lat0 + 0.045, lng: lng0, r10: 2 },           // ~5km
+    { id: "N2", lat: lat0 + 0.27, lng: lng0, r10: 9 },            // ~30km，出界
+    { id: "N3", lat: lat0, lng: lng0 + 0.05, r10: null },         // 無效值
+  ];
+  ok(W.neighborMaxR10(stns, lat0, lng0, "SELF") === 2, "取 10km 內鄰站最大 r10=2（排除本站與出界站）", W.neighborMaxR10(stns, lat0, lng0, "SELF"));
+  ok(W.neighborMaxR10([stns[0], stns[3]], lat0, lng0, "SELF") === null, "無有效鄰站 → null");
+  ok(W.neighborMaxR10([{ id: "N4", lat: lat0 + 0.01, lng: lng0, r10: 0 }], lat0, lng0, "SELF") === 0, "鄰站全乾 → 0");
+
+  // computeStats 兩個評分節：4 筆乾點位，鄰站訊號與窄/寬 QPF 各自對答案
+  const fcRows = [
+    { slot: "202607011000", pid: "A", tier: 0, poss: "低", qpf: 0, qpf_w: 3, nb_r10: 3, now_mm: 0 },  // 下了：窄漏、寬中、鄰站有叫
+    { slot: "202607011000", pid: "B", tier: 0, poss: "低", qpf: 0, qpf_w: 2, nb_r10: 0, now_mm: 0 },  // 沒下：窄對、寬誤報
+    { slot: "202607011000", pid: "C", tier: 0, poss: "低", qpf: 0, qpf_w: 0, nb_r10: 2, now_mm: 0 },  // 沒下：鄰站白叫
+    { slot: "202607011000", pid: "D", tier: 0, poss: "低", qpf: 0, qpf_w: 0, nb_r10: 0, now_mm: 0 },  // 下了：兩者都漏
+    { slot: "202607011000", pid: "E", tier: 2, poss: "高", qpf: 5, qpf_w: 5, nb_r10: 6, now_mm: 4 },  // 當下有雨 → 不進實驗樣本
+  ];
+  const obRows = [
+    { slot: "202607011100", pid: "A", p1h: 2, valid: true },
+    { slot: "202607011100", pid: "B", p1h: 0, valid: true },
+    { slot: "202607011100", pid: "C", p1h: 0, valid: true },
+    { slot: "202607011100", pid: "D", p1h: 1, valid: true },
+    { slot: "202607011100", pid: "E", p1h: 5, valid: true },
+  ];
+  const env = fakeEnv({ "shadow/fc/2026/07/01.ndjson": ndjson(fcRows), "shadow/ob/2026/07/01.ndjson": ndjson(obRows) });
+  const st = await W.computeStats(env, ["2026/07/01"]);
+  ok(st.neighbor_signal && st.neighbor_signal.samples === 4 && st.neighbor_signal.base_rate === 0.5, "鄰站節：樣本4、基準率0.5", st.neighbor_signal);
+  const th2 = st.neighbor_signal.thresholds.find(x => x.th === 2);
+  ok(th2.n === 2 && th2.precision === 0.5 && th2.recall === 0.5, "th=2：A,C 觸發 → precision .5 / recall .5", th2);
+  ok(st.qpf_radius && st.qpf_radius.samples === 4, "QPF 半徑節：樣本4（當下有雨不算）", st.qpf_radius);
+  // 窄：全沒喊（fa 分母 0→null），漏掉 A,D → miss 2/4；寬：喊了 A,B（A 中 B 誤報），漏 D → miss 1/2
+  ok(st.qpf_radius.narrow.accuracy === 0.5 && st.qpf_radius.narrow.miss === 0.5 && st.qpf_radius.narrow.false_alarm === null, "窄：對2錯2、沒喊過雨、漏 2/4", st.qpf_radius.narrow);
+  ok(st.qpf_radius.wide.accuracy === 0.5 && st.qpf_radius.wide.miss === 0.5 && st.qpf_radius.wide.false_alarm === 0.5, "寬：接到 A、換來 B 誤報", st.qpf_radius.wide);
 }
 
 // ── 7. W27 情境回測：同一批輸入，舊邏輯 vs 新邏輯 ─────────────
