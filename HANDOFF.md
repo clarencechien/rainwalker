@@ -26,7 +26,17 @@
 - 起因：cron 路徑 CPU 本就貼線（QPF 2.66MB 整包 JSON.parse 實測 ≈18ms、預報大 JSON 每輪 parse 兩次、測站抓兩次），07-05 晚部署的 OM/鄰站/寬QPF 再加一點就全面超線。
 - **已做 CPU 瘦身（行為不變）**：①`collectSources` 每輪各上游只抓/parse 一次，refresh 與 shadowAppend 共用；②QPF 改字串定向抽取＋只掃 box 列（`parseQpfRaw`/`extractQpfBox`，18.4→4.3ms，格式變化自動退回 JSON.parse）；③預報 F-D0047-089 存 R2 快取 `fc_cache.json` 25 分 TTL（跨日失效）。
 - 常設診斷：cron 進場先寫心跳 `meta/cron.json`（fired_at/step/err），**`/health`** 一眼分辨「沒觸發」（cron_age_min>15）vs「觸發但掛在某步」（cron_last.step!=done / err）。
-- **部署後盯 Cron events**：若仍見 Exceeded Resources → 免費 10ms 就是不夠，二選一：(a) 升級 Workers Paid（$5/月，CPU 30s，一勞永逸）；(b) 再拆輪（QPF 與 shadow 分兩輪跑）＋固定雙北測站清單縮小 O-A0002 payload。屆時由使用者拍板。
+- **07-06 10:20 復活確認**：瘦身版部署後 `/health` step=done、data/qpf 皆新鮮。注意 `wall_ms`（~9.7s）是掛鐘時間＝等網路，與 CPU 上限無關（Workers 凍結時鐘，程式無法自量 CPU）。
+- **重要認知（07-06 實證）：免費 10ms CPU 是「軟性執法」**。同帳號歷史 P99 51ms 跑了數週沒事；07-05 深夜起輪輪在 10ms 被砍（被砍時顯示的是配額值）；瘦身版首輪 **59.4ms 卻 Success**（含冷啟編譯，被放行時顯示實際用量）。結論＝執法是累犯制/機率性，**warm 輪實際 CPU 仍 >10ms 就隨時可能重演全滅**。
+- **判讀標準**：看部署數小時後 warm 輪成功事件的 CPU 欄——多在 10ms 以下＝安全；仍 20–50ms＝剩餘大頭是全台測站 O-A0002 的 JSON.parse（瘦身後唯一未動的大解析），照下行二選一處理。
+- **結案（07-06）**：warm 輪實測 50–70ms CPU，使用者拍板**升級 Workers Paid（$5/月，CPU 30s）**，CPU 疑慮解除。瘦身改動保留（好習慣不回退）；wrangler.toml 開 `[observability]`（Workers Logs）。
+
+### 付費後補修（2026-07-06，「該修的都修一修」）
+1. **housekeeping 已實作**（原 TODO#3 銷帳）：cron 每日 03:3x 刪 35 天前 `shadow/fc|ob` 日檔（=校準 4 週窗+1 週緩衝），`shadow/report/` 永久保留。
+2. **QPF 時效守衛**：`readQpf` 檢查 `datetime`，>70 分視同無 QPF 回 null——修「上游斷線時拿舊雨帶冒充未來 1h」的正確性洞。
+3. **週報凍結窗口加寬**：03:00–03:2x 三次機會（冪等覆寫），單輪失敗不再整天沒報告。
+4. **shadow 錯誤進心跳**：`meta/cron.json` 加 `shadow_err`，不再靜默吞掉（/health 可見）。
+5. **`SHADOWLOG_SPEC.md` v2 已入庫**（原 TODO#4 銷帳）：依現行實作重寫，含 fc/ob schema（新欄位）、打分定義、影子實驗節、housekeeping、原則。之後改 shadow 程式先改 spec。
 
 ### 部署後驗收（使用者 web UI 部署後打）
 - `/health` → `cron_ok: true`、`cron_last.step: "done"`（部署後等 10 分讓 cron 跑一輪）。
@@ -43,8 +53,8 @@
    - `qpf_radius`：寬半徑漏報降、誤報可接受 → 人工改 fusion 的 gridFactor。
    - `calibration`：桶樣本≥50 前端自動顯示，無需動作；可順手檢視桶界是否要調。
 2. **W28 新週報第一週檢查**：`scores_1h.false_alarm` 應大幅低於 W27 的 0.99；可能性「高」實際下雨率應回升；`scores_3h` 開始有值。新舊資料混跑（舊行無 claim）屬正常。
-3. **housekeeping 未實作**（spec 已寫）：刪舊 shadow 日誌只留週報，等週報穩定幾輪再做。
-4. `SHADOWLOG_SPEC.md` 不在 repo（CONTEXT 有引用但未上傳）——下次請使用者提供，或依 `CONTEXT_COMPACT.md` §6 補寫入庫。
+3. ~~housekeeping 未實作~~ → **已於 07-06 實作**（每日 03:3x 刪 35 天前日檔，週報永存）。
+4. ~~SHADOWLOG_SPEC.md 不在 repo~~ → **已於 07-06 補寫 v2 入庫**（依現行實作重寫）。
 5. 前端校準註記依賴 `/shadow/latest` 凍結週報的 `calibration` 節——W28 起產出的週報才有此節。
 
 ### 工程紀律（不變，細節見§7）

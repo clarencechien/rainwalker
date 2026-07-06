@@ -8,7 +8,7 @@ import fs from "node:fs";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
 const cfg = fs.readFileSync(new URL("../src/points.json", import.meta.url), "utf8");
 const body = src.replace(/^import CONFIG.*$/m, `const CONFIG=${cfg};`) +
-  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox };\n";
+  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping };\n";
 const W = await import("data:text/javascript;base64," + Buffer.from(body).toString("base64"));
 
 let pass = 0, fail = 0;
@@ -250,6 +250,30 @@ console.log("\n[6c] QPF 解析 CPU 瘦身");
   const va = p.body.split(",");
   for (let iy = 1; iy <= 3; iy++) for (let ix = 2; ix <= 4; ix++) { const v = +va[iy * 6 + ix]; if (v > 0) old.push(v); }
   ok(JSON.stringify(cells.map(c => c.mm)) === JSON.stringify(old), "新舊解析結果等價", { new: cells.map(c => c.mm), old });
+}
+
+// ── 6d. QPF 時效守衛 + housekeeping ──────────────────────────
+console.log("\n[6d] QPF 時效守衛 / housekeeping");
+{
+  const now = Date.parse("2026-07-06T12:00:00+08:00");
+  ok(W.qpfIsFresh({ datetime: "2026-07-06T11:10:00+08:00" }, now) === true, "50 分前 QPF＝新鮮");
+  ok(W.qpfIsFresh({ datetime: "2026-07-06T10:30:00+08:00" }, now) === false, "90 分前 QPF＝過期");
+  ok(W.qpfIsFresh({ datetime: null }, now) === false && W.qpfIsFresh(null, now) === false, "無 datetime/null＝不新鮮");
+
+  // housekeeping：35 天前的 fc/ob 刪、近的留、report 不碰
+  const z = n => String(n).padStart(2, "0");
+  const dayKey = back => { const d = new Date(Date.now() + 8 * 3600 * 1000); d.setUTCDate(d.getUTCDate() - back);
+    return `${d.getUTCFullYear()}/${z(d.getUTCMonth() + 1)}/${z(d.getUTCDate())}`; };
+  const oldK = dayKey(40), newK = dayKey(10);
+  const keys = [`shadow/fc/${oldK}.ndjson`, `shadow/fc/${newK}.ndjson`, `shadow/ob/${oldK}.ndjson`, `shadow/ob/${newK}.ndjson`];
+  const deleted = [];
+  const env = { BUCKET: {
+    list: async ({ prefix }) => ({ objects: keys.filter(k => k.startsWith(prefix)).map(k => ({ key: k })), truncated: false }),
+    delete: async k => { deleted.push(k); }
+  } };
+  const r = await W.housekeeping(env);
+  ok(r.deleted === 2 && deleted.length === 2, "刪 2 檔（fc+ob 各 1）", r);
+  ok(deleted.every(k => k.includes(oldK)) && !deleted.some(k => k.includes(newK)), "只刪 35 天前", deleted);
 }
 
 // ── 7. W27 情境回測：同一批輸入，舊邏輯 vs 新邏輯 ─────────────

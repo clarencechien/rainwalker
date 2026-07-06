@@ -8,20 +8,25 @@ export default {
     ctx.waitUntil((async () => {
       // 心跳：一進來就寫，證明 cron 有被觸發（診斷「資料卡住是 cron 沒跑還是跑掛」用，/health 讀）
       const t0 = Date.now(), fired = new Date().toISOString();
-      let step = "start", err = null;
+      let step = "start", err = null, shadowErr = null;
       try { await env.BUCKET.put("meta/cron.json", JSON.stringify({ fired_at: fired, step: "running" }), { httpMetadata: { contentType: "application/json" } }); } catch (e) {}
       try {
-        step = "sources"; const src = await collectSources(env);   // 各上游每輪只抓一次、只 parse 一次（CPU 預算緊）
+        step = "sources"; const src = await collectSources(env);   // 各上游每輪只抓一次、只 parse 一次
         step = "refresh"; await refresh(env, src);
-        step = "shadow"; try { await shadowAppend(env, src); } catch (e) { /* shadow 失敗不影響主流程 */ }
+        step = "shadow"; try { await shadowAppend(env, src); } catch (e) { shadowErr = String(e); /* 不擋主流程，但記進心跳 */ }
+        const tw = new Date(Date.now() + 8 * 3600 * 1000);
         step = "report";
         try {
-          const tw = new Date(Date.now() + 8 * 3600 * 1000);
-          if (tw.getUTCHours() === 3 && tw.getUTCMinutes() < 10) await weeklyReport(env);  // 每天 03:0x 更新當週週報
+          if (tw.getUTCHours() === 3 && tw.getUTCMinutes() < 30) await weeklyReport(env);   // 03:00–03:2x 三次機會（冪等覆寫），單輪失敗不再整天沒報告
+        } catch (e) {}
+        step = "housekeep";
+        try {
+          if (tw.getUTCHours() === 3 && tw.getUTCMinutes() >= 30 && tw.getUTCMinutes() < 40) await housekeeping(env);   // 每天 03:3x 清 35 天前 shadow 日誌
         } catch (e) {}
         step = "done";
       } catch (e) { err = String(e); }
-      try { await env.BUCKET.put("meta/cron.json", JSON.stringify({ fired_at: fired, ms: Date.now() - t0, step, err }), { httpMetadata: { contentType: "application/json" } }); } catch (e) {}
+      // wall_ms=掛鐘時間（含等網路），非 CPU；Workers 凍結時鐘無法自量 CPU，CPU 用量只能看後台 Cron events/Metrics
+      try { await env.BUCKET.put("meta/cron.json", JSON.stringify({ fired_at: fired, wall_ms: Date.now() - t0, step, err, shadow_err: shadowErr }), { httpMetadata: { contentType: "application/json" } }); } catch (e) {}
     })());
   },
 
@@ -46,7 +51,8 @@ export default {
       const cronAge = cron && cron.fired_at ? Math.round((now - Date.parse(cron.fired_at)) / 60000) : null;
       return json({
         now_tw: new Date(now + 8 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " "),
-        cron_last: cron,                       // fired_at/ms/step/err；step!=done 或 err 有值＝跑了但掛在該步
+        cron_last: cron,                       // fired_at/wall_ms/step/err；step!=done 或 err 有值＝跑了但掛在該步
+                                               // wall_ms 是掛鐘時間（大多在等網路），與免費方案 10ms「CPU」上限無關
         cron_age_min: cronAge,                 // >15 分＝cron 沒在跑（排程是每 10 分）
         cron_ok: cronAge != null && cronAge <= 15,
         data_updated_local: data ? data.updated_local : null,
@@ -576,9 +582,43 @@ function extractQpfBox(body, lon0, lat0, res, NX, NY, box) {
   }
   return cells;
 }
+// QPF 是「未來 1 小時」產品：太舊（>70 分）等於沒有，回 null 讓 fusion 走無 QPF 路徑，
+// 避免上游斷線時拿三小時前的雨帶冒充「等一下會下」
+const QPF_MAX_AGE_MIN = 70;
+function qpfIsFresh(q, nowMs) {
+  if (!q || !q.datetime) return false;
+  const t = Date.parse(q.datetime);
+  return isFinite(t) && nowMs - t <= QPF_MAX_AGE_MIN * 60000;
+}
 async function readQpf(env) {
-  try { const o = await env.BUCKET.get("qpf.json"); return o ? JSON.parse(await o.text()) : null; }
+  try {
+    const o = await env.BUCKET.get("qpf.json");
+    if (!o) return null;
+    const q = JSON.parse(await o.text());
+    return qpfIsFresh(q, Date.now()) ? q : null;
+  }
   catch (e) { return null; }
+}
+// housekeeping（spec §housekeeping）：刪 35 天前的 shadow 日誌（fc/ob），週報 shadow/report/ 永久保留。
+// 35 天 = 校準表 4 週窗 + 一週緩衝。
+async function housekeeping(env) {
+  const d = new Date(Date.now() + 8 * 3600 * 1000);
+  d.setUTCDate(d.getUTCDate() - 35);
+  const z = n => String(n).padStart(2, "0");
+  const cut = `${d.getUTCFullYear()}${z(d.getUTCMonth() + 1)}${z(d.getUTCDate())}`;
+  let deleted = 0;
+  for (const prefix of ["shadow/fc/", "shadow/ob/"]) {
+    let cursor;
+    do {
+      const l = await env.BUCKET.list({ prefix, cursor, limit: 500 });
+      for (const o of l.objects || []) {
+        const m = /(\d{4})\/(\d{2})\/(\d{2})\.ndjson$/.exec(o.key);
+        if (m && `${m[1]}${m[2]}${m[3]}` < cut) { await env.BUCKET.delete(o.key); deleted++; }
+      }
+      cursor = l.truncated ? l.cursor : undefined;
+    } while (cursor);
+  }
+  return { cut, deleted };
 }
 // 取某點未來1小時 QPF（mm）：取附近 gridFactor 格內最大雨格；qpf 載入但附近無雨格回 0；未載入回 null
 // gridFactor 預設 1.5（≈2km，現行 fusion 用）；影子實驗另以 4.5（≈6km）記 qpf_w，容忍雷達格點位移誤差
