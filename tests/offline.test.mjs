@@ -8,7 +8,7 @@ import fs from "node:fs";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
 const cfg = fs.readFileSync(new URL("../src/points.json", import.meta.url), "utf8");
 const body = src.replace(/^import CONFIG.*$/m, `const CONFIG=${cfg};`) +
-  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping };\n";
+  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping, nearbyHint, omHint };\n";
 const W = await import("data:text/javascript;base64," + Buffer.from(body).toString("base64"));
 
 let pass = 0, fail = 0;
@@ -101,11 +101,13 @@ console.log("\n[3] computeStats 視野分離");
   ];
   const env = fakeEnv({ "shadow/fc/2026/07/01.ndjson": ndjson(fcRows), "shadow/ob/2026/07/01.ndjson": ndjson(obRows) });
   const st = await W.computeStats(env, ["2026/07/01"]);
-  ok(st.coverage.expected === 4 && st.coverage.settled === 4, "1h coverage：4 筆（答案未到不計）", st.coverage);
+  // 3h 列（E1@1000、E2@1200）的 h1 斷言（tier0）也記入 1h 帳（07-06 事件修正）：
+  // A hit、B fa、C miss、D hit、E1 hit(0vs0)、E2 hit(0vs0) → expected 6
+  ok(st.coverage.expected === 6 && st.coverage.settled === 6, "1h coverage：6 筆（含 3h 列的 h1 斷言）", st.coverage);
   ok(st.coverage_3h.expected === 1 && st.coverage_3h.settled === 1, "3h coverage：1 筆", st.coverage_3h);
-  ok(st.scores_1h.direction_hit === 0.5, "1h 方向命中 2/4", st.scores_1h.direction_hit);
+  ok(st.scores_1h.direction_hit === 0.67, "1h 方向命中 4/6", st.scores_1h.direction_hit);
   ok(st.scores_1h.false_alarm === 0.33, "1h 誤報 1/3", st.scores_1h.false_alarm);
-  ok(st.scores_1h.miss === 1, "1h 漏報 1/1", st.scores_1h.miss);
+  ok(st.scores_1h.miss === 0.33, "1h 漏報 1/3（C 漏；E1/E2 沒喊也沒下）", st.scores_1h.miss);
   ok(st.scores_3h.direction_hit === 1 && st.scores_3h.false_alarm === 0, "3h 主張對 3 筆 max 命中", st.scores_3h);
   ok(st.scores.direction_hit === st.scores_1h.direction_hit, "scores 舊欄位=scores_1h（相容）");
   // 可能性桶（對 1h 實際）：高=A(下),B(沒下)→0.5；中=D(下),E(+60沒下)→0.5；低=C(下)→1
@@ -276,6 +278,32 @@ console.log("\n[6d] QPF 時效守衛 / housekeeping");
   ok(deleted.every(k => k.includes(oldK)) && !deleted.some(k => k.includes(newK)), "只刪 35 天前", deleted);
 }
 
+// ── 6e. 鄰區提示層（advisory-only，不動判語/帳本）─────────────
+console.log("\n[6e] nearbyHint 提示層");
+{
+  // 07-06 14:20 永和實錄：本站乾、窄 QPF=0、鄰站 nb=3 → 提示觸發
+  ok(/鄰區正在下雨/.test(W.nearbyHint(0, 0, 3, 1.9) || ""), "永和 14:20 情境：鄰站 3mm/h 觸發提示", W.nearbyHint(0, 0, 3, 1.9));
+  // 07-06 14:20 北投實錄：nb=0、寬 QPF=16 → 雷達提示
+  ok(/雨胞/.test(W.nearbyHint(0, 0, 0, 16) || ""), "北投 14:20 情境：寬 QPF 16 觸發雷達提示", W.nearbyHint(0, 0, 0, 16));
+  // 14:10 全盲情境：什麼都沒有 → 無提示（不亂叫）
+  ok(W.nearbyHint(0, 0, 0, 0) === null, "全零 → 不提示");
+  // 已在下 → 主判語自己講，不疊提示
+  ok(W.nearbyHint(0.5, 0, 3, 5) === null, "本站已在下 → null");
+  // 主判語已喊「等一下會下」（q>0）→ 不疊提示
+  ok(W.nearbyHint(0, 2, 3, 5) === null, "QPF 已喊雨 → null");
+  // 門檻以下不叫
+  ok(W.nearbyHint(0, 0, 1, 0.5) === null, "nb<2 且 qw<1 → null");
+  // 提示不影響 buildNowcast 輸出（帳本欄位不變）
+  const nc = W.buildNowcast(0, 0, 0, 0, [], null, 12);
+  ok(nc.tier === 0 && nc.possibility === "低" && !("nb_hint" in nc), "buildNowcast 本體不含提示層（外掛欄位，A/B 不污染）", nc.tier);
+
+  // 挑戰者參考行 omHint：07-06 13:xx–14:10 情境（乾、無 QPF、OM 89%）→ 事前就給機率
+  ok(/約 9 成/.test(W.omHint(0, 0, 89) || ""), "OM 89% → 約 9 成參考行", W.omHint(0, 0, 89));
+  ok(/極高/.test(W.omHint(0, null, 100) || ""), "OM 100% → 極高", W.omHint(0, null, 100));
+  ok(W.omHint(0, 0, 44) === null, "OM 44%（低於 70 門檻）→ 不顯示");
+  ok(W.omHint(3, 0, 89) === null && W.omHint(0, 2, 89) === null && W.omHint(0, 0, null) === null, "已在下/QPF 已喊/無值 → null");
+}
+
 // ── 7. W27 情境回測：同一批輸入，舊邏輯 vs 新邏輯 ─────────────
 console.log("\n[7] W27 情境回測（整週掛特報+plan3=8、實際幾乎沒下）");
 {
@@ -314,8 +342,9 @@ console.log("\n[7] W27 情境回測（整週掛特報+plan3=8、實際幾乎沒�
   ok(stOld.scores_1h.possibility["高"] <= 0.1, "舊邏輯「高」實際下雨率 ≤0.1（重現 W27 放水）", stOld.scores_1h.possibility);
   ok(stNew.scores_1h.false_alarm == null, "新邏輯 1h 不再喊沒把握的雨（誤報分母=0）", stNew.scores_1h.false_alarm);
   ok(stNew.scores_1h.possibility["高"] == null && stNew.scores_1h.possibility["中"] != null, "新邏輯不再亂發「高」，長視野歸「中」", stNew.scores_1h.possibility);
-  ok(stNew.coverage.expected + stNew.coverage_3h.expected > 0 && stNew.coverage.expected === 0, "這批主張全部改記 3h 口徑", [stNew.coverage.expected, stNew.coverage_3h.expected]);
-  ok(stNew.scores_1h.miss == null || stNew.scores_1h.miss === 0 || true, "（資訊）漏報改由 3h 口徑承接");
+  // 07-06 事件修正後：3h 列的 h1「不會下」斷言同時記 1h 帳 → 兩本帳都有 144 筆
+  ok(stNew.coverage.expected === 144 && stNew.coverage_3h.expected === 144, "1h/3h 兩本帳都記滿（h1 斷言可追責）", [stNew.coverage.expected, stNew.coverage_3h.expected]);
+  ok(stNew.scores_1h.miss === 0.06, "「不會下」斷言的漏報 8/144 誠實入帳", stNew.scores_1h.miss);
   // 3h 口徑下這批喊「中雨」但 3h 內多半也沒下 → 誤報會留在 scores_3h，這是「題目出對了」的樣子
   ok(stNew.scores_3h.false_alarm != null, "3h 誤報有值（問題被放回正確的考卷）", stNew.scores_3h);
 }

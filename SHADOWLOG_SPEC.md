@@ -39,6 +39,8 @@
 ## 4. 對答案（join 與打分，`computeStats`）
 - **1h 主張**：fc[T] join ob[T+60]（`slotPlus` 處理跨日/月/年）。
 - **3h 主張**：fc[T] join ob[T+60/120/180] 的 p1h **最大值**（近似「3h 內是否下過」）；tier 用 `tier3`。
+- **claim=3h 的列記兩本帳**（2026-07-06 中和 14:05 事件修正）：h1 斷言（tier，通常 0＝「這 1 小時
+  應不會下」）入 **1h 帳**——漏報才追得到責；tier3 入 **3h 帳**。
 - 答案未到（ans slot > 觀測最大 slot）不計入 coverage。
 - 分級 `tierMm`：<0.2/1/4/10/30 → 0–5。「喊雨」= tier≥2；「下雨」（對決/校準/可能性）= p1h≥0.2。
 - 指標：`direction_hit`（|tier差|≤1）、`false_alarm`（喊了沒下/喊雨數）、`miss`（沒喊卻下/沒喊數）、

@@ -5,7 +5,7 @@
 ## 系統現況（2026-07-06）
 - **接手開發前必讀：`HANDOFF.md` 開頭「接手快照」**（已完成事項＋TODO＋驗收清單），背景見 `CONTEXT_COMPACT.md`；shadow 規格見 `SHADOWLOG_SPEC.md`（改 shadow 程式先改 spec）。
 - **已升級 Workers Paid（$5/月）**：免費 10ms CPU 軟性執法曾造成 cron 全滅（HANDOFF 事件記錄）；CPU 瘦身保留。housekeeping 已上線（每日 03:3x 刪 35 天前 shadow 日檔，週報永存）；QPF >70 分視同無（時效守衛）。
-- 判語為雙 horizon：主判語只由 1h 實證出（現況/趨勢/QPF），縣市預報+特報降為「稍後…」副提示（`h3_hint`），可能性有 gating。
+- 判語為雙 horizon：主判語只由 1h 實證出（現況/趨勢/QPF），縣市預報+特報降為「稍後…」副提示（`h3_hint`），可能性有 gating。另有**鄰區提示層** `nb_hint`（advisory-only：鄰站≥2mm/h 或寬 QPF≥1mm 時的橘字提示，不動判語與帳本，待四週數據決定升級或下架）。
 - shadow log 每 10 分對 8 個固定點記錄預報與實測、自動對答案；週報含 `scores_1h`/`scores_3h`/`calibration`（QPF 校準表）/`source_duel`（vs Open-Meteo）/`neighbor_signal`（鄰站領先訊號實驗）/`qpf_radius`（取值半徑實驗）。影子實驗一律不進 fusion，四週看數據人工拍板。
 - UI：精簡（預設）/進階雙模式；換地點＝雙北行政區快選或目前定位；自訂點/路徑存 localStorage（上限 8 點，不進 shadow 統計）。
 
