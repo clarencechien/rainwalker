@@ -221,6 +221,26 @@ function fillH(mm){ return mm<=0?0:Math.min(92,12+mm/30*80); }
 const STATE_TXT={confirmed:{t:"正在下",c:"var(--i4)"},forming:{t:"快下了",c:"var(--i3)"},
   forecast:{t:"稍後可能下",c:"var(--dim)"},cleared:{t:"今天看起來乾",c:"var(--dry)"},revised:{t:"雨勢有變",c:"var(--i3)"}};
 
+/* 顯示層合成（07-06 文案融合）：本站乾且主判語未喊雨時，把 鄰區/外部參考/h3 吸收成
+   「一句大字＋一句行動」；細節進「為什麼」收合。只改口氣，不改 tier/claim/可能性（帳本照打 h1 分）。 */
+function speak(nc){
+  if(!nc) return null;
+  const rainingNow=(nc.evidence&&nc.evidence[0]>=0.2);
+  if(rainingNow||(nc.tier||0)>=1) return null;             // 主判語本來就有立場，照舊
+  if(nc.nb_hint) return {v:"雨快到了",s:"附近正在下雨，出門帶傘",c:"var(--i3)"};
+  if(nc.om_hint) return {v:"等下可能下",s:"降雨機率偏高，出門帶傘",c:"var(--i3)"};
+  if(nc.h3_hint) return {v:"現在沒雨",s:nc.h3_hint+"・帶傘保險",c:null};
+  return null;
+}
+/* 進階卡/浮層用：三種提示只挑最重要的一行（鄰區＞外部＞稍後） */
+function hintLine(nc){
+  if(!nc) return "";
+  if(nc.nb_hint) return `<div class="warnline">⚠ ${nc.nb_hint}</div>`;
+  if(nc.om_hint) return `<div class="refline">◇ ${nc.om_hint}</div>`;
+  if(nc.h3_hint) return `<div class="h3hint">${nc.h3_hint}</div>`;
+  return "";
+}
+
 let DATA=null, HERE=null, sel=0;
 let MODE=(function(){try{return localStorage.getItem("rw_mode")||"simple"}catch(e){return "simple"}})();
 function saveMode(m){try{localStorage.setItem("rw_mode",m)}catch(e){}}
@@ -263,11 +283,16 @@ function renderSimple(){
   const ev=nc.evidence||[h.mm_hr||0,h.qpf_1h||0,0];
   const evbars=ev.map(mm=>{const k=classify(mm);const ht=mm<=0?6:Math.min(100,14+mm/16*86);
     return `<div class="b" style="height:${ht}%;background:${mm<=0?'var(--line)':k.c}"></div>`}).join("");
-  const why=(nc.why||[]).map(w=>`<span class="chip${/特報/.test(w)?' w':''}">${w}</span>`).join("");
+  const whyExtra=[];
+  if(nc.nb_hint) whyExtra.push(`<span class="chip w">${nc.nb_hint}</span>`);
+  if(nc.om_hint) whyExtra.push(`<span class="chip">${nc.om_hint}</span>`);
+  const sp=speak(nc);
+  if(sp&&nc.h3_hint&&sp.v!=="現在沒雨") whyExtra.push(`<span class="chip">${nc.h3_hint}</span>`);
+  const why=(nc.why||[]).map(w=>`<span class="chip${/特報/.test(w)?' w':''}">${w}</span>`).join("")+whyExtra.join("");
   const warnLine=nc.warn?`<div class="warnline">⚠ ${h.county||""}${nc.warn}特報（全區）</div>`:"";
-  const h3Line=nc.h3_hint?`<div class="h3hint">${nc.h3_hint}</div>`:"";
-  const nbLine=nc.nb_hint?`<div class="warnline">⚠ ${nc.nb_hint}</div>`:"";
-  const omLine=nc.om_hint?`<div class="refline">◇ ${nc.om_hint}</div>`:"";
+  const h3Line=(!sp&&nc.h3_hint)?`<div class="h3hint">${nc.h3_hint}</div>`:"";   // 主判語有立場時 h3 才單獨成行
+  const vTxt=sp?sp.v:(nc.verdict||"—"), vSub=sp?sp.s:(nc.sub||"");
+  const vC=sp&&sp.c?sp.c:tc;
   const poss=nc.possibility||"", possC=poss==="高"?"var(--i2)":poss==="中"?"var(--i3)":"var(--dry)";
   const fillNow=h.mm_hr<=0?0:Math.min(40,14+h.mm_hr/30*26);
   v.innerHTML=`<div class="wcard bigcard">
@@ -275,10 +300,8 @@ function renderSimple(){
     <div class="inner">
       <div class="locrow"><div class="bigloc">${HERE.label||"所在地"} · ${h.county||""}<div class="bigsub2">最近測站 ${h.name||""}</div></div>
         <button class="cbtn" onclick="openMgr()">換地點</button></div>
-      <div class="bigverdict" style="color:${tc};margin-top:auto">${nc.verdict||"—"}</div>
-      <div class="bighint">${nc.sub||""}</div>
-      ${nbLine}
-      ${omLine}
+      <div class="bigverdict" style="color:${vC};margin-top:auto">${vTxt}</div>
+      <div class="bighint">${vSub}</div>
       ${h3Line}
       <span class="poss" style="color:${possC}"><span class="d" style="background:${possC}"></span>可能性 ${poss}${calibNote(h.qpf_1h,h.mm_hr)}</span>
       ${warnLine}
@@ -377,16 +400,15 @@ function renderCard(){
   }
   const st=STATE_TXT[(plan&&plan.state)]||STATE_TXT.forecast;
   const warnB=top&&top.warn?`<div class="warnline" style="margin:10px 0 0">⚠ ${top.warn}特報（全區）</div>`:"";
-  const nbB=(function(){let h=null;[pf.nowcast,pt2.nowcast].forEach(n=>{if(n&&n.nb_hint&&!h)h=n.nb_hint;});return h?`<div class="warnline" style="margin:10px 0 0">⚠ ${h}</div>`:"";})();
-  const omB=(function(){let h=null;[pf.nowcast,pt2.nowcast].forEach(n=>{if(n&&n.om_hint&&!h)h=n.om_hint;});return h?`<div class="refline">◇ ${h}</div>`:"";})();
-  const h3B=top&&top.h3_hint?`<div class="h3hint">${top.h3_hint}</div>`:"";
+  // 三種提示只出最重要的一行（鄰區＞外部＞稍後），避免疊字
+  const hintB=(function(){const ns=[pf.nowcast,pt2.nowcast].filter(Boolean);
+    for(const k of ["nb_hint","om_hint","h3_hint"]){const n=ns.find(x=>x[k]);if(n)return hintLine({[k]:n[k]});}
+    return "";})();
   document.getElementById("card").innerHTML=
     `<div class="card">
       <div class="verdict" style="color:${vc}">${vtxt}</div>
       <div class="vhint">${vhint}</div>
-      ${nbB}
-      ${omB}
-      ${h3B}
+      ${hintB}
       ${warnB}
       <div class="meta"><span class="route">${nameOf(p.from)}<span class="raq">→</span>${nameOf(p.to)}</span>
         <span class="state"><span class="sd" style="background:${st.c}"></span><span style="color:${st.c}">${st.t}</span></span></div>
@@ -421,7 +443,7 @@ function renderDetail(label,at){
     `<div class="dpanel">
       <div class="dhead"><div><div class="dttl">${label}</div><div class="dsub">${cty}${at.here?' · 最近站 '+at.here.name:''}</div></div>
         <button class="dclose" onclick="closeDetail()">✕</button></div>
-      ${(function(){const nc=at.here&&at.here.nowcast;if(!nc)return"";const c=TIERC[nc.tier]||"var(--txt)";const wl=nc.warn?`<div class="warnline" style="margin-top:8px">⚠ ${cty}${nc.warn}特報（全區）</div>`:"";const h3=nc.h3_hint?`<div class="h3hint">${nc.h3_hint}</div>`:"";const nb=nc.nb_hint?`<div class="warnline" style="margin-top:8px">⚠ ${nc.nb_hint}</div>`:"";const omr=nc.om_hint?`<div class="refline">◇ ${nc.om_hint}</div>`:"";return `<div style="font-size:21px;font-weight:800;color:${c};margin-top:4px">${nc.verdict}</div><div style="font-size:13px;color:var(--muted);margin-top:4px">${nc.sub||""}</div>${nb}${omr}${h3}${wl}`;})()}
+      ${(function(){const nc=at.here&&at.here.nowcast;if(!nc)return"";const sp=speak(nc);const c=sp&&sp.c?sp.c:(TIERC[nc.tier]||"var(--txt)");const wl=nc.warn?`<div class="warnline" style="margin-top:8px">⚠ ${cty}${nc.warn}特報（全區）</div>`:"";const extra=sp?"":hintLine(nc);return `<div style="font-size:21px;font-weight:800;color:${c};margin-top:4px">${sp?sp.v:nc.verdict}</div><div style="font-size:13px;color:var(--muted);margin-top:4px">${sp?sp.s:(nc.sub||"")}</div>${extra}${wl}`;})()}
       <div class="dlabel">今日預報（${cty}逐 3 小時）</div>
       <div class="rib">${segs}</div><div class="rhrs">${hrs}</div>
       <div class="dlabel">附近測站現況（mm/hr）</div>
