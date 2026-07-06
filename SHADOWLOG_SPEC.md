@@ -26,7 +26,8 @@
   tier, claim,  // claim="1h"|"3h"：主張視野（h1 有實證=1h；僅長視野訊號=3h）
   tier3,        // h3（縣市 plan3/特報）之 tier；claim=3h 時打分用
   poss, trend, verdict, warn, plan3, now_mm,
-  om_mm, om_pop,// 影子實驗（Phase C）：Open-Meteo 未來 1h 降水/機率（重疊加權）
+  om_mm, om_pop,// 影子實驗（Phase C）：Open-Meteo best_match 未來 1h 降水/機率（重疊加權）
+  om_jma,       // 第二挑戰者：OM 指定 jma_seamless 的未來 1h 降水（JMA 無 pop）
   station, county }
 ```
 舊資料無 claim/tier3/om_*/nb_r10/qpf_w 欄位 → 打分時 claim 視為 "1h"、其餘節跳過該行。
@@ -48,7 +49,10 @@
 - 週報分節：`scores_1h`、`scores_3h`（`scores` = scores_1h 舊欄位相容）；`public.*` 以 1h 為口徑。
 
 ## 5. 影子實驗評分節（皆不進 fusion；樣本=「本站當下乾」的筆）
-- `source_duel`：CWA-QPF vs Open-Meteo（accuracy／false_alarm／miss，下雨=0.2）。
+- `source_duel`：CWA-QPF vs Open-Meteo best_match（accuracy／false_alarm／miss，下雨=0.2）。
+- `source_duel_jma`：CWA-QPF vs OM-JMA（jma_seamless）同筆對決。模型選擇原則：best_match=被計分的
+  正選（＝實際會用的形態、pop 只有它有）；JMA=第二影子（東亞對流口碑待驗）；ECMWF ifs025 不接
+  （25km/3h 對 1h 題太鈍）。
 - `neighbor_signal`：nb_r10 ≥ 門檻（0.5/1/2/5）之 precision/recall，對照 base_rate。
 - `qpf_radius`：窄（qpf）vs 寬（qpf_w）同筆對決。
 - `calibration`（Phase B）：QPF 分桶 0 / 0–0.5 / 0.5–1 / 1–2 / 2–5 / 5–10 / 10–20 / 20+，
