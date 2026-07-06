@@ -16,3 +16,10 @@ crons = ["*/10 * * * *"]
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "rainwalker"
+
+# 2026-07-06 已升級 Workers Paid（$5/月，CPU 上限 30s）：免費 10ms 軟性執法曾造成 cron 全滅（見 HANDOFF 事件記錄）
+# cron CPU 瘦身（來源共用、QPF 定向掃描、預報快取）仍保留——是好習慣，不因付費而回退
+
+# Workers Logs：invocation 層級記錄，除錯 cron/fetch 用（付費方案含 20M events/月）
+[observability]
+enabled = true
