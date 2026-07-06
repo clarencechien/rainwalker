@@ -216,6 +216,13 @@ function slots(blocks,dayWin){
   return out;
 }
 function fillH(mm){ return mm<=0?0:Math.min(92,12+mm/30*80); }
+/* 「接下來的雨勢」三格（現在/+1h/+3h）＝全 UI 共同時間軸（精簡卡/點卡/detail 同一套） */
+function ev3html(nc,mm){
+  const ev=(nc&&nc.evidence)||[mm||0,0,0];
+  const bars=ev.map(v=>{const k=classify(v);const ht=v<=0?6:Math.min(100,14+v/16*86);
+    return `<div class="b" style="height:${ht}%;background:${v<=0?'var(--line)':k.c}"></div>`}).join("");
+  return `<div class="ev3">${bars}</div><div class="evax"><span>現在</span><span>+1 小時</span><span>+3 小時</span></div>`;
+}
 
 // 進階路徑卡狀態：白話
 const STATE_TXT={confirmed:{t:"正在下",c:"var(--i4)"},forming:{t:"快下了",c:"var(--i3)"},
@@ -280,9 +287,6 @@ function renderSimple(){
   const h=HERE.here, nc=h.nowcast||{};
   const tier=(nc.tier!=null)?nc.tier:classify(h.mm_hr).t;
   const tc=TIERC[tier]||"var(--txt)";
-  const ev=nc.evidence||[h.mm_hr||0,h.qpf_1h||0,0];
-  const evbars=ev.map(mm=>{const k=classify(mm);const ht=mm<=0?6:Math.min(100,14+mm/16*86);
-    return `<div class="b" style="height:${ht}%;background:${mm<=0?'var(--line)':k.c}"></div>`}).join("");
   const whyExtra=[];
   if(nc.nb_hint) whyExtra.push(`<span class="chip w">${nc.nb_hint}</span>`);
   if(nc.om_hint) whyExtra.push(`<span class="chip">${nc.om_hint}</span>`);
@@ -306,8 +310,7 @@ function renderSimple(){
       <span class="poss" style="color:${possC}"><span class="d" style="background:${possC}"></span>可能性 ${poss}${calibNote(h.qpf_1h,h.mm_hr)}</span>
       ${warnLine}
       <div class="evlabel" style="margin-top:18px">接下來的雨勢</div>
-      <div class="ev3">${evbars}</div>
-      <div class="evax"><span>現在</span><span>+1 小時</span><span>+3 小時</span></div>
+      ${ev3html(nc,h.mm_hr)}
       <div class="whytog" onclick="this.nextElementSibling.classList.toggle('show')">▸ 為什麼這樣判？</div>
       <div class="whybox">${why}</div>
     </div></div>`;
@@ -319,7 +322,9 @@ function ppCard(label,p,onclick){
   const tier=(nc.tier!=null)?nc.tier:classify(mm).t;
   const tc=TIERC[tier]||"var(--muted)";
   const h=mm<=0?0:Math.min(50,16+mm/30*34);
-  const segs=slots(p.plan,DATA.day_window).map(s=>`<i style="background:${s.k.t?s.k.c:'var(--line)'}"></i>`).join("");
+  // 迷你條＝現在/+1h/+3h（與精簡卡/detail 同一時間軸）；沒有 nowcast 時退回當下值
+  const ev=(nc.evidence)||[mm,0,0];
+  const segs=ev.map(v=>{const k=classify(v);return `<i style="background:${v>0?k.c:'var(--line)'}"></i>`}).join("");
   // label 一律以 fusion tier 為準（跟精簡卡/路徑卡同調）
   const nowT=classify(mm).t;
   let lv;
@@ -412,7 +417,7 @@ function renderCard(){
       ${warnB}
       <div class="meta"><span class="route">${nameOf(p.from)}<span class="raq">→</span>${nameOf(p.to)}</span>
         <span class="state"><span class="sd" style="background:${st.c}"></span><span style="color:${st.c}">${st.t}</span></span></div>
-      <div class="daylabel">今日預報（每 3 小時 · 縣市級）</div>
+      <div class="daylabel">今日整天（縣市級 · 每 3 小時）</div>
       ${dayStrip(plan,DATA.day_window)}
     </div>`;
 }
@@ -444,7 +449,8 @@ function renderDetail(label,at){
       <div class="dhead"><div><div class="dttl">${label}</div><div class="dsub">${cty}${at.here?' · 最近站 '+at.here.name:''}</div></div>
         <button class="dclose" onclick="closeDetail()">✕</button></div>
       ${(function(){const nc=at.here&&at.here.nowcast;if(!nc)return"";const sp=speak(nc);const c=sp&&sp.c?sp.c:(TIERC[nc.tier]||"var(--txt)");const wl=nc.warn?`<div class="warnline" style="margin-top:8px">⚠ ${cty}${nc.warn}特報（全區）</div>`:"";const extra=sp?"":hintLine(nc);return `<div style="font-size:21px;font-weight:800;color:${c};margin-top:4px">${sp?sp.v:nc.verdict}</div><div style="font-size:13px;color:var(--muted);margin-top:4px">${sp?sp.s:(nc.sub||"")}</div>${extra}${wl}`;})()}
-      <div class="dlabel">今日預報（${cty}逐 3 小時）</div>
+      ${(function(){const nc=at.here&&at.here.nowcast;return nc?`<div class="dlabel">接下來的雨勢</div>${ev3html(nc,at.here.mm_hr)}`:"";})()}
+      <div class="dlabel">今日整天（${cty}縣市級 · 每 3 小時）</div>
       <div class="rib">${segs}</div><div class="rhrs">${hrs}</div>
       <div class="dlabel">附近測站現況（mm/hr）</div>
       <div class="dlist">${rows||'<div class="dempty">附近無測站資料</div>'}</div>
