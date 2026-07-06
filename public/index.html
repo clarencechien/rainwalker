@@ -66,7 +66,8 @@ font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-web
 .pp{flex:1;height:118px;cursor:pointer}
 .pp .inner{padding:13px 6px;text-align:center;height:100%;display:flex;flex-direction:column;justify-content:flex-start;gap:1px;text-shadow:0 1px 3px rgba(8,12,20,.65)}
 .pp .ar{font-size:13px;color:var(--muted)}
-.pp .lv{font-size:15px;font-weight:800;margin-top:3px}
+.pp .psub{font-size:9px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pp .lv{font-size:15px;font-weight:800;margin-top:2px}
 .pp .mrib{display:flex;gap:2px;margin-top:9px}
 .pp .mrib i{flex:1;height:4px;border-radius:2px}
 
@@ -317,7 +318,7 @@ function renderSimple(){
 }
 
 /* ---------------- 進階模式 ---------------- */
-function ppCard(label,p,onclick){
+function ppCard(label,p,onclick,sub){
   const mm=p.mm_hr||0, nc=p.nowcast||{};
   const tier=(nc.tier!=null)?nc.tier:classify(mm).t;
   const tc=TIERC[tier]||"var(--muted)";
@@ -325,6 +326,7 @@ function ppCard(label,p,onclick){
   // 迷你條＝現在/+1h/+3h（與精簡卡/detail 同一時間軸）；沒有 nowcast 時退回當下值
   const ev=(nc.evidence)||[mm,0,0];
   const segs=ev.map(v=>{const k=classify(v);return `<i style="background:${v>0?k.c:'var(--line)'}"></i>`}).join("");
+  const subL=sub?`<div class="psub">${sub}</div>`:"";
   // label 一律以 fusion tier 為準（跟精簡卡/路徑卡同調）
   const nowT=classify(mm).t;
   let lv;
@@ -333,16 +335,18 @@ function ppCard(label,p,onclick){
   else lv="轉"+WORD[tier];                     // 當下較弱、等下更強：轉{詞}
   return `<div class="pp wcard" onclick="${onclick}">
     <div class="wfill" style="height:${h}%;background:${classify(mm).c}${mm<=0?';opacity:0':''}"></div>
-    <div class="inner"><div class="ar">${label}</div>
+    <div class="inner"><div class="ar">${label}</div>${subL}
       <div class="lv" style="color:${tier>0?tc:'var(--muted)'}">${lv}</div>
       <div class="mrib">${segs}</div></div></div>`;
 }
 function renderPoints(){
   let html="";
-  if(HERE&&HERE.here) html+=ppCard(HERE.label||"所在地",{mm_hr:HERE.here.mm_hr,plan:HERE.plan,nowcast:HERE.here.nowcast},`openDetailLL(${HERE.lat},${HERE.lng},'${HERE.label||"所在地"}')`);
-  html+=(DATA.points||[]).map(p=>ppCard(p.area,p,`openPoint('${p.id}')`)).join("");
+  // 「目前定位」才是一等公民卡；主卡選自訂點時，該點已在自訂清單裡，不重複畫
+  if(HERE&&HERE.here&&LOC.type==="geo") html+=ppCard(HERE.label||"所在地",{mm_hr:HERE.here.mm_hr,plan:HERE.plan,nowcast:HERE.here.nowcast},`openDetailLL(${HERE.lat},${HERE.lng},'${HERE.label||"所在地"}')`,HERE.here.name?`站 ${HERE.here.name}`:"");
+  html+=(DATA.points||[]).map(p=>ppCard(p.area,p,`openPoint('${p.id}')`,p.name)).join("");
   html+=CPTS.map(p=>{const d=CDATA[p.id]||{mm_hr:0,plan:[]};
-    return ppCard(p.name,d,`openDetailLL(${p.lat},${p.lng},'${p.name}')`);}).join("");
+    const sub=(d.station?`站 ${d.station}`:"自訂")+(LOC.type==="pt"&&LOC.id===p.id?" · 主卡":"");
+    return ppCard(p.name,d,`openDetailLL(${p.lat},${p.lng},'${p.name}')`,sub);}).join("");
   html+=`<div class="pp wcard mgrbtn" onclick="openMgr()"><div class="inner"><div class="ar">自訂</div><div class="lv" style="color:var(--dim)">＋ 地點</div></div></div>`;
   document.getElementById("points").innerHTML=html;
 }
@@ -540,7 +544,7 @@ function renderMgr(){
   const rows=CPTS.map(p=>`<div class="drow"><div class="dname" style="cursor:pointer" onclick="pickLoc('${p.id}')">${p.name}${LOC.type==='pt'&&LOC.id===p.id?'（使用中）':''}<span class="ddist">${(+p.lat).toFixed(3)}, ${(+p.lng).toFixed(3)}</span></div>
     <button class="dclose" style="width:32px;height:32px;font-size:12px" onclick="delPt('${p.id}')">刪</button></div>`).join("");
   const opts=[...((DATA&&DATA.points)||[]).map(p=>`<option value="${p.id}">${p.area}</option>`),
-              ...CPTS.map(p=>`<option value="${p.id}">${p.name}</option>`)].join("");
+              ...CPTS.map(p=>`<option value="${p.id}">${p.name}（自訂）</option>`)].join("");
   const prows=CPATHS.map(cp=>`<div class="drow"><div class="dname">${nameOf(cp.from)} → ${nameOf(cp.to)}</div>
     <button class="dclose" style="width:32px;height:32px;font-size:12px" onclick="delPath('${cp.id}')">刪</button></div>`).join("");
   el.innerHTML=`<div class="dpanel">
@@ -629,7 +633,7 @@ async function loadCustomPoints(){
     for(const p of need){
       try{
         const at=await (await fetch(`/at?lat=${p.lat}&lng=${p.lng}&n=4`,{cache:"no-store"})).json();
-        if(at&&!at.error&&at.here){ CDATA[p.id]={mm_hr:at.here.mm_hr,plan:at.plan||[],nowcast:at.here.nowcast,county:at.here.county,lat:p.lat,lng:p.lng}; got=true; }
+        if(at&&!at.error&&at.here){ CDATA[p.id]={mm_hr:at.here.mm_hr,plan:at.plan||[],nowcast:at.here.nowcast,county:at.here.county,station:at.here.name,lat:p.lat,lng:p.lng}; got=true; }
       }catch(e){}
     }
     if(got&&MODE==="pro") renderActive();
