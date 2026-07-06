@@ -21,7 +21,8 @@ export default {
         } catch (e) {}
         step = "done";
       } catch (e) { err = String(e); }
-      try { await env.BUCKET.put("meta/cron.json", JSON.stringify({ fired_at: fired, ms: Date.now() - t0, step, err }), { httpMetadata: { contentType: "application/json" } }); } catch (e) {}
+      // wall_ms=掛鐘時間（含等網路），非 CPU；Workers 凍結時鐘無法自量 CPU，CPU 用量只能看後台 Cron events/Metrics
+      try { await env.BUCKET.put("meta/cron.json", JSON.stringify({ fired_at: fired, wall_ms: Date.now() - t0, step, err }), { httpMetadata: { contentType: "application/json" } }); } catch (e) {}
     })());
   },
 
@@ -46,7 +47,8 @@ export default {
       const cronAge = cron && cron.fired_at ? Math.round((now - Date.parse(cron.fired_at)) / 60000) : null;
       return json({
         now_tw: new Date(now + 8 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " "),
-        cron_last: cron,                       // fired_at/ms/step/err；step!=done 或 err 有值＝跑了但掛在該步
+        cron_last: cron,                       // fired_at/wall_ms/step/err；step!=done 或 err 有值＝跑了但掛在該步
+                                               // wall_ms 是掛鐘時間（大多在等網路），與免費方案 10ms「CPU」上限無關
         cron_age_min: cronAge,                 // >15 分＝cron 沒在跑（排程是每 10 分）
         cron_ok: cronAge != null && cronAge <= 15,
         data_updated_local: data ? data.updated_local : null,

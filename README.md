@@ -22,6 +22,7 @@ UI 鐵律：燒杯水位 `.wfill` 永遠後景（z-index:0、opacity .30），�
 ## 資料卡住怎麼查
 先打 `/health`：`cron_age_min > 15`＝cron 沒在跑；`cron_last.step != "done"` 或 `err` 有值＝cron 有跑但掛在該步。再看後台 Cron events：**Exceeded Resources（CPU 10ms）＝免費方案 CPU 超限**（2026-07-05 事件，已做瘦身：來源共用一次 parse、QPF 定向掃描、預報 R2 快取；若復發見 HANDOFF 事件記錄的兩個選項）。`/refresh` 能成功＝程式與金鑰正常。
 **CPU 紀律**：cron 路徑上禁止重複 parse 大 JSON；新增資料源先估 CPU（免費上限 10ms/次）。
+**判讀餘裕**：`/health` 的 `wall_ms` 是掛鐘時間（大多在等網路），與 CPU 上限無關；真實 CPU 用量只能看後台 Cron events 成功事件的 CPU 欄或 Metrics 的 CPU P50/P99——成功事件普遍 ≥7ms 才算貼線。
 
 ## 重點
 - `wrangler.toml` 必須在 **repo 根目錄**（Cloudflare 連動 build 才會套用 assets / cron / R2）。

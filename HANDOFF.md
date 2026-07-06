@@ -26,7 +26,8 @@
 - 起因：cron 路徑 CPU 本就貼線（QPF 2.66MB 整包 JSON.parse 實測 ≈18ms、預報大 JSON 每輪 parse 兩次、測站抓兩次），07-05 晚部署的 OM/鄰站/寬QPF 再加一點就全面超線。
 - **已做 CPU 瘦身（行為不變）**：①`collectSources` 每輪各上游只抓/parse 一次，refresh 與 shadowAppend 共用；②QPF 改字串定向抽取＋只掃 box 列（`parseQpfRaw`/`extractQpfBox`，18.4→4.3ms，格式變化自動退回 JSON.parse）；③預報 F-D0047-089 存 R2 快取 `fc_cache.json` 25 分 TTL（跨日失效）。
 - 常設診斷：cron 進場先寫心跳 `meta/cron.json`（fired_at/step/err），**`/health`** 一眼分辨「沒觸發」（cron_age_min>15）vs「觸發但掛在某步」（cron_last.step!=done / err）。
-- **部署後盯 Cron events**：若仍見 Exceeded Resources → 免費 10ms 就是不夠，二選一：(a) 升級 Workers Paid（$5/月，CPU 30s，一勞永逸）；(b) 再拆輪（QPF 與 shadow 分兩輪跑）＋固定雙北測站清單縮小 O-A0002 payload。屆時由使用者拍板。
+- **07-06 10:20 復活確認**：瘦身版部署後 `/health` step=done、data/qpf 皆新鮮。注意 `wall_ms`（~9.7s）是掛鐘時間＝等網路，與 CPU 10ms 上限無關（Workers 凍結時鐘，程式無法自量 CPU）；餘裕要看後台 Cron events **成功事件**的 CPU 欄或 Metrics CPU P50/P99，普遍 ≥7ms 才算貼線。
+- **若再見 Exceeded Resources**：免費 10ms 就是不夠，二選一：(a) 升級 Workers Paid（$5/月，CPU 30s，一勞永逸）；(b) 再拆輪（QPF 與 shadow 分兩輪跑）＋固定雙北測站清單縮小 O-A0002 payload。屆時由使用者拍板。
 
 ### 部署後驗收（使用者 web UI 部署後打）
 - `/health` → `cron_ok: true`、`cron_last.step: "done"`（部署後等 10 分讓 cron 跑一輪）。
