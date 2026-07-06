@@ -21,7 +21,15 @@
 6. **影子實驗③QPF 取值半徑**：fc 行記 `qpf_w`（`qpfAt` gridFactor=4.5 ≈6km；fusion 現行 1.5 格不動）；週報 `qpf_radius` 節（窄/寬同筆對決 accuracy/誤報/漏報）。
 7. 預設拍板均已確認：雙 horizon 文案 OK、gating OK、Open-Meteo 先上、自訂點 localStorage OK。
 
+### 事件記錄：2026-07-05 深夜起 cron 全滅（已定位＝CPU 超限，已做瘦身）
+- 現象：23:10 起 data.json 不更新；後台 Cron events 每輪 **Exceeded Resources、CPU 10ms**＝免費方案每次呼叫 CPU 上限，cron 有觸發但跑到 10ms 被砍，到不了寫 data.json。手動 `/refresh`（HTTP）能過＝fetch 對突發較寬容、cron 強制較嚴。
+- 起因：cron 路徑 CPU 本就貼線（QPF 2.66MB 整包 JSON.parse 實測 ≈18ms、預報大 JSON 每輪 parse 兩次、測站抓兩次），07-05 晚部署的 OM/鄰站/寬QPF 再加一點就全面超線。
+- **已做 CPU 瘦身（行為不變）**：①`collectSources` 每輪各上游只抓/parse 一次，refresh 與 shadowAppend 共用；②QPF 改字串定向抽取＋只掃 box 列（`parseQpfRaw`/`extractQpfBox`，18.4→4.3ms，格式變化自動退回 JSON.parse）；③預報 F-D0047-089 存 R2 快取 `fc_cache.json` 25 分 TTL（跨日失效）。
+- 常設診斷：cron 進場先寫心跳 `meta/cron.json`（fired_at/step/err），**`/health`** 一眼分辨「沒觸發」（cron_age_min>15）vs「觸發但掛在某步」（cron_last.step!=done / err）。
+- **部署後盯 Cron events**：若仍見 Exceeded Resources → 免費 10ms 就是不夠，二選一：(a) 升級 Workers Paid（$5/月，CPU 30s，一勞永逸）；(b) 再拆輪（QPF 與 shadow 分兩輪跑）＋固定雙北測站清單縮小 O-A0002 payload。屆時由使用者拍板。
+
 ### 部署後驗收（使用者 web UI 部署後打）
+- `/health` → `cron_ok: true`、`cron_last.step: "done"`（部署後等 10 分讓 cron 跑一輪）。
 - `/refresh` → 回傳 `shadow.om` 應為 `"ok"`。
 - `/shadow/peek?day=YYYYMMDD` → fc 最新行應有 `claim`/`om_mm`/`nb_r10`/`qpf_w` 欄位。
 - `/stats?weeks=1` → 應有 `scores_1h`/`scores_3h`/`source_duel`/`neighbor_signal`/`qpf_radius` 節。

@@ -8,7 +8,7 @@ import fs from "node:fs";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
 const cfg = fs.readFileSync(new URL("../src/points.json", import.meta.url), "utf8");
 const body = src.replace(/^import CONFIG.*$/m, `const CONFIG=${cfg};`) +
-  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10 };\n";
+  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox };\n";
 const W = await import("data:text/javascript;base64," + Buffer.from(body).toString("base64"));
 
 let pass = 0, fail = 0;
@@ -220,6 +220,36 @@ console.log("\n[6b] 影子實驗：QPF 半徑與鄰站領先訊號");
   // 窄：全沒喊（fa 分母 0→null），漏掉 A,D → miss 2/4；寬：喊了 A,B（A 中 B 誤報），漏 D → miss 1/2
   ok(st.qpf_radius.narrow.accuracy === 0.5 && st.qpf_radius.narrow.miss === 0.5 && st.qpf_radius.narrow.false_alarm === null, "窄：對2錯2、沒喊過雨、漏 2/4", st.qpf_radius.narrow);
   ok(st.qpf_radius.wide.accuracy === 0.5 && st.qpf_radius.wide.miss === 0.5 && st.qpf_radius.wide.false_alarm === 0.5, "寬：接到 A、換來 B 誤報", st.qpf_radius.wide);
+}
+
+// ── 6c. QPF 瘦身解析：字串快路徑 / 退路 / box 掃描 ────────────
+console.log("\n[6c] QPF 解析 CPU 瘦身");
+{
+  // 快路徑：metadata regex + content indexOf 抽取（不整包 JSON.parse）
+  const meta = { StartPointLongitude: "120.00", StartPointLatitude: "24.00", GridResolution: "0.5",
+    GridDimensionX: "6", GridDimensionY: "5", DateTime: "2026-07-06T10:00:00+08:00" };
+  // 值 = k（k=iy*6+ix），k=14 改 -99 驗過濾
+  const vals = Array.from({ length: 30 }, (_, k) => k === 14 ? -99 : k).join(",");
+  const fastTxt = JSON.stringify({ cwaopendata: { dataset: { datasetInfo: { parameterSet: meta }, contents: { content: vals } } } });
+  const p = W.parseQpfRaw(fastTxt);
+  ok(p.lon0 === 120 && p.lat0 === 24 && p.res === 0.5 && p.NX === 6 && p.NY === 5, "快路徑 metadata", p);
+  ok(p.datetime === "2026-07-06T10:00:00+08:00", "快路徑 DateTime", p.datetime);
+  ok(p.body === vals, "快路徑 content 抽取正確");
+  // 退路：content 是物件（#text 變體）→ 快路徑放棄、JSON.parse 接手
+  const objTxt = JSON.stringify({ cwaopendata: { dataset: { datasetInfo: { parameterSet: meta }, contents: { content: { "#text": "1,2,3" } } } } });
+  ok(W.parseQpfRaw(objTxt).body === "1,2,3", "退路：#text 變體仍可解", W.parseQpfRaw(objTxt).body);
+
+  // box 掃描：box lon[121,122]→ix 2..4、lat[24.5,25.5]→iy 1..3；期望 9 格、k=14 被 -99 濾掉
+  const cells = W.extractQpfBox(p.body, p.lon0, p.lat0, p.res, p.NX, p.NY, { lon: [121, 122], lat: [24.5, 25.5] });
+  ok(cells.length === 8, "box 內 9 格、-99 濾 1 → 8 格", cells.length);
+  const c20 = cells.find(c => c.mm === 20);
+  ok(c20 && c20.lat === 25.5 && c20.lng === 121, "k=20（iy3,ix2）座標正確", c20);
+  ok(!cells.some(c => c.mm === 14 || c.mm < 0), "-99 不進 cells");
+  // 與舊法（split 全部再索引）等價性抽查
+  const old = [];
+  const va = p.body.split(",");
+  for (let iy = 1; iy <= 3; iy++) for (let ix = 2; ix <= 4; ix++) { const v = +va[iy * 6 + ix]; if (v > 0) old.push(v); }
+  ok(JSON.stringify(cells.map(c => c.mm)) === JSON.stringify(old), "新舊解析結果等價", { new: cells.map(c => c.mm), old });
 }
 
 // ── 7. W27 情境回測：同一批輸入，舊邏輯 vs 新邏輯 ─────────────
