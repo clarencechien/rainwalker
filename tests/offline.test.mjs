@@ -8,7 +8,7 @@ import fs from "node:fs";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
 const cfg = fs.readFileSync(new URL("../src/points.json", import.meta.url), "utf8");
 const body = src.replace(/^import CONFIG.*$/m, `const CONFIG=${cfg};`) +
-  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping };\n";
+  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping, nearbyHint };\n";
 const W = await import("data:text/javascript;base64," + Buffer.from(body).toString("base64"));
 
 let pass = 0, fail = 0;
@@ -276,6 +276,26 @@ console.log("\n[6d] QPF 時效守衛 / housekeeping");
   const r = await W.housekeeping(env);
   ok(r.deleted === 2 && deleted.length === 2, "刪 2 檔（fc+ob 各 1）", r);
   ok(deleted.every(k => k.includes(oldK)) && !deleted.some(k => k.includes(newK)), "只刪 35 天前", deleted);
+}
+
+// ── 6e. 鄰區提示層（advisory-only，不動判語/帳本）─────────────
+console.log("\n[6e] nearbyHint 提示層");
+{
+  // 07-06 14:20 永和實錄：本站乾、窄 QPF=0、鄰站 nb=3 → 提示觸發
+  ok(/鄰區正在下雨/.test(W.nearbyHint(0, 0, 3, 1.9) || ""), "永和 14:20 情境：鄰站 3mm/h 觸發提示", W.nearbyHint(0, 0, 3, 1.9));
+  // 07-06 14:20 北投實錄：nb=0、寬 QPF=16 → 雷達提示
+  ok(/雨胞/.test(W.nearbyHint(0, 0, 0, 16) || ""), "北投 14:20 情境：寬 QPF 16 觸發雷達提示", W.nearbyHint(0, 0, 0, 16));
+  // 14:10 全盲情境：什麼都沒有 → 無提示（不亂叫）
+  ok(W.nearbyHint(0, 0, 0, 0) === null, "全零 → 不提示");
+  // 已在下 → 主判語自己講，不疊提示
+  ok(W.nearbyHint(0.5, 0, 3, 5) === null, "本站已在下 → null");
+  // 主判語已喊「等一下會下」（q>0）→ 不疊提示
+  ok(W.nearbyHint(0, 2, 3, 5) === null, "QPF 已喊雨 → null");
+  // 門檻以下不叫
+  ok(W.nearbyHint(0, 0, 1, 0.5) === null, "nb<2 且 qw<1 → null");
+  // 提示不影響 buildNowcast 輸出（帳本欄位不變）
+  const nc = W.buildNowcast(0, 0, 0, 0, [], null, 12);
+  ok(nc.tier === 0 && nc.possibility === "低" && !("nb_hint" in nc), "buildNowcast 本體不含提示層（外掛欄位，A/B 不污染）", nc.tier);
 }
 
 // ── 7. W27 情境回測：同一批輸入，舊邏輯 vs 新邏輯 ─────────────

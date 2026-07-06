@@ -87,10 +87,15 @@ export default {
         const plan = county ? (fc[county] || []) : [];
         const d8 = new Date(Date.now() + 8 * 3600 * 1000), nowHr = d8.getHours() + d8.getMinutes() / 60;
         const qv = qpfAt(qpf, lat, lng);
+        let nc = null;
+        if (here) {
+          nc = buildNowcast(here.mm_hr, here.r10, here.r1h, qv, plan, warnings[county], nowHr);
+          nc.nb_hint = nearbyHint(here.mm_hr, qv,
+            neighborMaxR10(stations, lat, lng, here.id, 10), qpfAt(qpf, lat, lng, 4.5));
+        }
         return json({
           lat, lng, day_window: CONFIG.day_window || [6, 24], qpf_time: qpf ? qpf.datetime : null,
-          here: here ? { name: here.name, mm_hr: here.mm_hr, county, qpf_1h: qv,
-            nowcast: buildNowcast(here.mm_hr, here.r10, here.r1h, qv, plan, warnings[county], nowHr) } : null,
+          here: here ? { name: here.name, mm_hr: here.mm_hr, county, qpf_1h: qv, nowcast: nc } : null,
           plan,
           nearby: sorted.slice(0, n).map(s => ({ name: s.name, area: s.county, mm_hr: s.mm_hr, dist_km: +s.dist.toFixed(2) }))
         });
@@ -213,12 +218,16 @@ async function buildLive(env, qpf, src) {
   const d8 = new Date(Date.now() + 8 * 3600 * 1000);
   const nowHr = d8.getHours() + d8.getMinutes() / 60;
 
+  const fullNet = stations.length > 50;   // 只有全站清單才算鄰站訊號（子集抓法算出來會失真）
   const points = CONFIG.points.map(p => {
     const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
     const mm = st ? st.mm_hr : 0, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[p.county] || [];
+    const nc = buildNowcast(mm, st ? st.r10 : null, st ? st.r1h : null, qv, plan, warnings[p.county], nowHr);
+    nc.nb_hint = nearbyHint(mm, qv,
+      fullNet && st ? neighborMaxR10(stations, p.lat, p.lng, st.id, 10) : null,
+      qpfAt(qpf, p.lat, p.lng, 4.5));
     return { id: p.id, name: p.name, area: p.area, lat: p.lat, lng: p.lng,
-             mm_hr: mm, qpf_1h: qv, plan,
-             nowcast: buildNowcast(mm, st ? st.r10 : null, st ? st.r1h : null, qv, plan, warnings[p.county], nowHr) };
+             mm_hr: mm, qpf_1h: qv, plan, nowcast: nc };
   });
   const mmOf = Object.fromEntries(points.map(p => [p.id, p.mm_hr]));
 
@@ -745,6 +754,16 @@ function actionHint(tier, wp) {
 }
 // A2 可能性 gating 門檻（人工調參區；依 spec §6 絕不自動改）
 const GATE = { Q_HI: 1, PLAN_HEAVY: 8 };
+// 鄰區提示層（2026-07-06 中和案例後新增）：純提示、不動主判語/tier/可能性/shadow 帳本，
+// 影子實驗 A/B 不受污染；四週後 neighbor_signal/qpf_radius 數據好→升級進 gating、爛→下架。門檻人工調。
+const NEAR = { NB_R10: 2, QPF_W: 1 };
+function nearbyHint(now, q, nb, qw) {
+  if ((+now || 0) >= 0.2) return null;                 // 已在下，主判語自己會講
+  if (q != null && q > 0) return null;                 // 主判語已喊「等一下會下」
+  if (nb != null && nb >= NEAR.NB_R10) return `鄰區正在下雨（10 公里內約 ${Math.round(nb)} mm/h），可能移入`;
+  if (qw != null && qw >= NEAR.QPF_W) return `雷達顯示附近有雨胞（約 ${Math.round(qw)} mm），留意移入`;
+  return null;
+}
 function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
   now = +now || 0;
   const trend = (r10 != null && r1h != null)
