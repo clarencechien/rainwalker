@@ -38,6 +38,12 @@
 4. **shadow 錯誤進心跳**：`meta/cron.json` 加 `shadow_err`，不再靜默吞掉（/health 可見）。
 5. **`SHADOWLOG_SPEC.md` v2 已入庫**（原 TODO#4 銷帳）：依現行實作重寫，含 fc/ob schema（新欄位）、打分定義、影子實驗節、housekeeping、原則。之後改 shadow 程式先改 spec。
 
+### 案例研究：2026-07-06 14:05 中和午後對流漏報（第一個真實個案，shadow log 取證）
+- 時間線（shadow log 實錄）：14:05 實際開始下（使用者目擊）→ **14:10 輪 CWA 全盲**（now_mm=0、p10=0、QPF 窄/寬=0、nb_r10=0）但 **Open-Meteo om_pop=89%**→ **14:20 輪**中和站 p10=3 進帳、判語翻成「正在下，還會更大」；**QPF 窄=0 但寬=2.4（板橋 6、北投 16）**＝雷達有看到雨胞、格點位移讓 1.5 格半徑全漏；永和本站乾但 **nb_r10=3**（鄰站訊號教科書式觸發）。
+- 結論：**程式計算無誤**（輸入全零時判語只能如此），破口在 CWA 1h 證據鏈——①雨量站 10 分桶+發布延遲 ≈15 分盲窗（結構性，無解）；②QPF 窄半徑格點位移漏接（實驗③正是解方）。三條影子實驗（OM 高機率、鄰站、寬 QPF）當場全立功——但依紀律仍等四週數據再進 fusion。
+- 因本案修正：**3h 列的 h1 斷言（「這 1 小時應不會下」）同時記入 1h 帳**（原設計漏報不進 scores_1h＝考卷漏題）；`/shadow/peek` 升格常設取證工具（`&slot=` 前綴、`&pid=` 過濾）。
+- 取證 SOP（下次再漏報照做）：`/shadow/peek?day=YYYYMMDD&slot=YYYYMMDDHH` 拉事發前後 fc/ob → 看 now_mm/p10（觀測層）、qpf vs qpf_w（雷達位移）、nb_r10（鄰站）、om_mm/om_pop（挑戰者）→ 分辨資料鏈 vs 計算鏈。
+
 ### 部署後驗收（使用者 web UI 部署後打）
 - `/health` → `cron_ok: true`、`cron_last.step: "done"`（部署後等 10 分讓 cron 跑一輪）。
 - `/refresh` → 回傳 `shadow.om` 應為 `"ok"`。

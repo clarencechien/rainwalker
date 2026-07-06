@@ -97,17 +97,21 @@ export default {
       } catch (e) { return json({ error: String(e) }, 500); }
     }
 
-    // Shadow log 探針：驗 R2 累積（驗完移除）
+    // Shadow log 探針（常設）：預設回最後 8 行；&slot=（前綴，如 2026070614）&pid= 可回溯任意時段做事後取證
     if (url.pathname === "/shadow/peek") {
       const day = url.searchParams.get("day") || "";
       if (day.length !== 8) return json({ error: "need day=YYYYMMDD" }, 400);
       const dp = `${day.slice(0,4)}/${day.slice(4,6)}/${day.slice(6,8)}`;
+      const slotQ = url.searchParams.get("slot") || "", pidQ = url.searchParams.get("pid") || "";
       const n = (CONFIG.shadow_points || []).length || 8;
       async function rd(k) {
         try {
           const o = await env.BUCKET.get(k); if (!o) return { lines: 0 };
-          const ls = (await o.text()).trim().split("\n").filter(Boolean);
-          return { lines: ls.length, last: ls.slice(-n).map(x => JSON.parse(x)) };
+          const ls = (await o.text()).trim().split("\n").filter(Boolean).map(x => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean);
+          const sel = (slotQ || pidQ)
+            ? ls.filter(x => (!slotQ || String(x.slot).startsWith(slotQ)) && (!pidQ || x.pid === pidQ)).slice(-240)
+            : ls.slice(-n);
+          return { lines: ls.length, last: sel };
         } catch (e) { return { error: String(e) }; }
       }
       return json({ day, points: n, fc: await rd(`shadow/fc/${dp}.ndjson`), ob: await rd(`shadow/ob/${dp}.ndjson`) });
@@ -407,6 +411,16 @@ async function computeStats(env, dayPaths) {
       S1.settled++;
       score(S1, f.tier, tierMm(o.p1h));
     } else {
+      // 3h 列的 h1 也是可證偽主張（「這 1 小時應不會下」）→ 一併記入 1h 帳，漏報才追得到責
+      // （2026-07-06 中和 14:05 事件修正：漏報當時不進 1h 帳＝考卷漏題）
+      const ans1 = slotPlus(f.slot, 60);
+      if (ans1 <= maxSlot) {
+        S1.expected++;
+        const o = obMap.get(`${f.pid}|${ans1}`);
+        if (!o) S1.gap++;
+        else if (!o.valid || o.p1h == null) S1.invalid++;
+        else { S1.settled++; score(S1, f.tier, tierMm(o.p1h)); }
+      }
       if (slotPlus(f.slot, 180) > maxSlot) continue;
       S3.expected++;
       const os = [60, 120, 180].map(m => obMap.get(`${f.pid}|${slotPlus(f.slot, m)}`));
