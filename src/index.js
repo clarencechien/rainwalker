@@ -11,8 +11,9 @@ export default {
       let step = "start", err = null;
       try { await env.BUCKET.put("meta/cron.json", JSON.stringify({ fired_at: fired, step: "running" }), { httpMetadata: { contentType: "application/json" } }); } catch (e) {}
       try {
-        step = "refresh"; await refresh(env);
-        step = "shadow"; try { await shadowAppend(env); } catch (e) { /* shadow 失敗不影響主流程 */ }
+        step = "sources"; const src = await collectSources(env);   // 各上游每輪只抓一次、只 parse 一次（CPU 預算緊）
+        step = "refresh"; await refresh(env, src);
+        step = "shadow"; try { await shadowAppend(env, src); } catch (e) { /* shadow 失敗不影響主流程 */ }
         step = "report";
         try {
           const tw = new Date(Date.now() + 8 * 3600 * 1000);
@@ -56,9 +57,10 @@ export default {
 
     if (url.pathname === "/refresh") {
       try {
-        await refresh(env);
+        const src = await collectSources(env);
+        await refresh(env, src);
         let shadow;
-        try { shadow = await shadowAppend(env); } catch (e) { shadow = { error: String(e) }; }
+        try { shadow = await shadowAppend(env, src); } catch (e) { shadow = { error: String(e) }; }
         return json({ ok: true, at: new Date().toISOString(), shadow });
       } catch (e) { return json({ ok: false, error: String(e) }, 500); }
     }
@@ -141,32 +143,62 @@ export default {
   }
 };
 
-async function refresh(env) {
+// 每輪 cron 的共用來源：QPF/全站/預報/特報 各抓一次、各 parse 一次（免費方案 CPU 上限 10ms，重複 parse 會被砍）
+async function collectSources(env) {
   let qpf = null;
-  try { qpf = await refreshQpf(env); } catch (e) { qpf = null; }
-  const data = await buildData(env, qpf);
+  try { qpf = await refreshQpf(env); } catch (e) { try { qpf = await readQpf(env); } catch (e2) { qpf = null; } }
+  let stations = [];
+  try { stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY)); } catch (e) {}
+  const fc = await forecastCached(env);
+  let warnings = {};
+  try { warnings = await fetchWarnings(env.CWA_KEY); } catch (e) {}
+  return { qpf, stations, fc, warnings };
+}
+// F-D0047-089 為逐 3 小時預報，25 分內走 R2 快取（跨日失效），省掉每輪的大 JSON parse
+async function forecastCached(env) {
+  const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  try {
+    const o = await env.BUCKET.get("fc_cache.json");
+    if (o) { const c = JSON.parse(await o.text()); if (c.day === today && Date.now() - c.at < 25 * 60 * 1000) return c.fc; }
+  } catch (e) {}
+  try {
+    const fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]);
+    await env.BUCKET.put("fc_cache.json", JSON.stringify({ at: Date.now(), day: today, fc }), { httpMetadata: { contentType: "application/json" } });
+    return fc;
+  } catch (e) {
+    try { const o = await env.BUCKET.get("fc_cache.json"); if (o) return JSON.parse(await o.text()).fc; } catch (e2) {}
+    return {};
+  }
+}
+
+async function refresh(env, src) {
+  if (!src) src = await collectSources(env);
+  const data = await buildData(env, src.qpf, src);
   await env.BUCKET.put("data.json", JSON.stringify(data), { httpMetadata: { contentType: "application/json" } });
 }
 
-async function buildData(env, qpf) {
-  try { return await buildLive(env, qpf); }
+async function buildData(env, qpf, src) {
+  try { return await buildLive(env, qpf, src); }
   catch (e) { return { ...DEMO, _source: "demo-fallback: " + String(e) }; }
 }
 
 // ── 現況 + 預報 + QPF ───────────────────────────────────────────
-async function buildLive(env, qpf) {
-  if (qpf === undefined) qpf = await readQpf(env);
+async function buildLive(env, qpf, src) {
+  if (qpf === undefined) qpf = src ? src.qpf : await readQpf(env);
 
-  const ids = CONFIG.points.map(p => p.station).filter(s => s && s !== "TODO");
-  const params = (ids.length === CONFIG.points.length) ? { StationId: ids.join(",") } : {};
-  const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY, { params }));
+  let stations = (src && src.stations && src.stations.length) ? src.stations : null;
+  if (!stations) {
+    const ids = CONFIG.points.map(p => p.station).filter(s => s && s !== "TODO");
+    const params = (ids.length === CONFIG.points.length) ? { StationId: ids.join(",") } : {};
+    stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY, { params }));
+  }
   if (!stations.length) throw new Error("no stations parsed");
   const byId = Object.fromEntries(stations.map(s => [s.id, s]));
   const countyOf = Object.fromEntries(CONFIG.points.map(p => [p.id, p.county]));
 
-  let fc = {};
-  try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); } catch (e) { fc = {}; }
-  const warnings = await fetchWarnings(env.CWA_KEY);
+  let fc = src ? src.fc : {};
+  if (!src) { try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); } catch (e) { fc = {}; } }
+  const warnings = src ? src.warnings : await fetchWarnings(env.CWA_KEY);
 
   const d8 = new Date(Date.now() + 8 * 3600 * 1000);
   const nowHr = d8.getHours() + d8.getMinutes() / 60;
@@ -221,16 +253,21 @@ async function r2AppendLines(env, key, lines) {
   const body = prev + lines.map(l => JSON.stringify(l)).join("\n") + "\n";
   await env.BUCKET.put(key, body, { httpMetadata: { contentType: "application/x-ndjson" } });
 }
-async function shadowAppend(env) {
+async function shadowAppend(env, src) {
   const pts = CONFIG.shadow_points || [];
   if (!pts.length) return;
   const { slot, datePath, ts, nowHr } = shadowSlot();
-  const stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));   // 全站，供 8 點綁最近站
+  const stations = (src && src.stations && src.stations.length)
+    ? src.stations
+    : extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY));   // 全站，供 8 點綁最近站
   if (!stations.length) return;
-  const qpf = await readQpf(env);
+  const qpf = src ? src.qpf : await readQpf(env);
   let fc = {}, warnings = {}, om = null;
-  try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); } catch (e) {}
-  try { warnings = await fetchWarnings(env.CWA_KEY); } catch (e) {}
+  if (src) { fc = src.fc || {}; warnings = src.warnings || {}; }
+  else {
+    try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); } catch (e) {}
+    try { warnings = await fetchWarnings(env.CWA_KEY); } catch (e) {}
+  }
   try { om = await fetchOpenMeteo(pts); } catch (e) { om = null; }   // 挑戰者純影子欄位，失敗不擋主流程
   const tsMin = parseLocalMin(ts);
   const fcLines = [], obLines = [];
@@ -485,25 +522,59 @@ async function weeklyReport(env, weekStr) {
 
 async function refreshQpf(env) {
   const key = (env.CWA_KEY || "").trim();
-  const raw = await (await fetch(`https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`,
-    { headers: { accept: "*/*", "user-agent": "rainwalker" } })).json();
+  const txt = await (await fetch(`https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-B0046-001?Authorization=${key}&format=JSON`,
+    { headers: { accept: "*/*", "user-agent": "rainwalker" } })).text();
+  const p = parseQpfRaw(txt);
+  const box = CONFIG.qpf_box || { lon: [119.8, 122.1], lat: [21.8, 25.4] };
+  const cells = extractQpfBox(p.body, p.lon0, p.lat0, p.res, p.NX, p.NY, box);
+  const out = { datetime: p.datetime, res: p.res, box, cells };
+  await env.BUCKET.put("qpf.json", JSON.stringify(out), { httpMetadata: { contentType: "application/json" } });
+  return out;
+}
+// CPU 瘦身：2.66MB 檔不做整包 JSON.parse——metadata 用 regex 撈頭部、content 用 indexOf 定位抽字串；
+// 格式對不上時退回完整 JSON.parse（貴但保命）
+function parseQpfRaw(txt) {
+  try {
+    const head = txt.slice(0, 6000);
+    const num = k => { const m = new RegExp('"' + k + '"\\s*:\\s*"?(-?[\\d.]+)"?').exec(head); return m ? +m[1] : NaN; };
+    const lon0 = num("StartPointLongitude"), lat0 = num("StartPointLatitude"), res = num("GridResolution");
+    const NX = num("GridDimensionX"), NY = num("GridDimensionY");
+    const dm = /"DateTime"\s*:\s*"([^"]+)"/.exec(head);
+    const ci = txt.indexOf('"content"');
+    if (ci >= 0 && [lon0, lat0, res, NX, NY].every(isFinite)) {
+      let q = txt.indexOf(":", ci + 9) + 1;
+      while (q < txt.length && (txt[q] === " " || txt[q] === "\n" || txt[q] === "\r" || txt[q] === "\t")) q++;
+      if (txt[q] === '"') {
+        const q2 = txt.indexOf('"', q + 1);
+        if (q2 > q) return { lon0, lat0, res, NX, NY, datetime: dm ? dm[1] : null, body: txt.slice(q + 1, q2) };
+      }
+    }
+  } catch (e) {}
+  const raw = JSON.parse(txt);
   const inf = raw.cwaopendata.dataset.datasetInfo.parameterSet;
-  const lon0 = +inf.StartPointLongitude, lat0 = +inf.StartPointLatitude, res = +inf.GridResolution;
-  const NX = +inf.GridDimensionX, NY = +inf.GridDimensionY;
   let body = raw.cwaopendata.dataset.contents.content;
   if (typeof body !== "string") body = body["#text"] || body._ || "";
-  const vals = body.split(",");
-  const box = CONFIG.qpf_box || { lon: [119.8, 122.1], lat: [21.8, 25.4] };
+  return { lon0: +inf.StartPointLongitude, lat0: +inf.StartPointLatitude, res: +inf.GridResolution,
+           NX: +inf.GridDimensionX, NY: +inf.GridDimensionY, datetime: inf.DateTime, body };
+}
+// 不 split 整串 24.7 萬值：先跳到 box 起始列，再逐值掃到 box 結束列（值序 k=iy*NX+ix，南起）
+function extractQpfBox(body, lon0, lat0, res, NX, NY, box) {
   const ix0 = Math.max(0, Math.floor((box.lon[0] - lon0) / res)), ix1 = Math.min(NX - 1, Math.ceil((box.lon[1] - lon0) / res));
   const iy0 = Math.max(0, Math.floor((box.lat[0] - lat0) / res)), iy1 = Math.min(NY - 1, Math.ceil((box.lat[1] - lat0) / res));
   const cells = [];
-  for (let iy = iy0; iy <= iy1; iy++) for (let ix = ix0; ix <= ix1; ix++) {
-    const v = +vals[iy * NX + ix];
-    if (v > 0) cells.push({ lat: +(lat0 + iy * res).toFixed(4), lng: +(lon0 + ix * res).toFixed(4), mm: v });
+  const kStart = iy0 * NX, kEnd = (iy1 + 1) * NX;
+  let pos = 0, k = 0;
+  while (k < kStart) { const c = body.indexOf(",", pos); if (c < 0) return cells; pos = c + 1; k++; }
+  while (k < kEnd && pos <= body.length) {
+    let e = body.indexOf(",", pos); if (e < 0) e = body.length;
+    const ix = k % NX;
+    if (ix >= ix0 && ix <= ix1) {
+      const v = +body.slice(pos, e);
+      if (v > 0) { const iy = (k / NX) | 0; cells.push({ lat: +(lat0 + iy * res).toFixed(4), lng: +(lon0 + ix * res).toFixed(4), mm: v }); }
+    }
+    pos = e + 1; k++;
   }
-  const out = { datetime: inf.DateTime, res, box, cells };
-  await env.BUCKET.put("qpf.json", JSON.stringify(out), { httpMetadata: { contentType: "application/json" } });
-  return out;
+  return cells;
 }
 async function readQpf(env) {
   try { const o = await env.BUCKET.get("qpf.json"); return o ? JSON.parse(await o.text()) : null; }

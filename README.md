@@ -20,7 +20,8 @@ UI 鐵律：燒杯水位 `.wfill` 永遠後景（z-index:0、opacity .30），�
 `/`（UI）、`/data.json`、`/at?lat=&lng=&n=`、`/refresh`、`/health`（cron 心跳+資料鮮度）、`/stats?weeks=`、`/shadow/latest`、`/shadow/gen?week=`、`/shadow/file?week=`、`/shadow/calib?weeks=`、`/shadow/peek?day=`（探針）
 
 ## 資料卡住怎麼查
-先打 `/health`：`cron_age_min > 15`＝cron 沒被觸發（去 Cloudflare 後台 Worker → Settings → Triggers 看 cron 還在不在、Observability 看 scheduled 有無 invocation）；`cron_last.step != "done"` 或 `err` 有值＝cron 有跑但掛在該步。`/refresh` 能成功＝程式與金鑰正常，問題在觸發層。
+先打 `/health`：`cron_age_min > 15`＝cron 沒在跑；`cron_last.step != "done"` 或 `err` 有值＝cron 有跑但掛在該步。再看後台 Cron events：**Exceeded Resources（CPU 10ms）＝免費方案 CPU 超限**（2026-07-05 事件，已做瘦身：來源共用一次 parse、QPF 定向掃描、預報 R2 快取；若復發見 HANDOFF 事件記錄的兩個選項）。`/refresh` 能成功＝程式與金鑰正常。
+**CPU 紀律**：cron 路徑上禁止重複 parse 大 JSON；新增資料源先估 CPU（免費上限 10ms/次）。
 
 ## 重點
 - `wrangler.toml` 必須在 **repo 根目錄**（Cloudflare 連動 build 才會套用 assets / cron / R2）。
