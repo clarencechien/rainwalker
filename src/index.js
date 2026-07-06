@@ -6,12 +6,21 @@ const json = (o, s = 200) => new Response(JSON.stringify(o), { status: s, header
 export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
-      await refresh(env);
-      try { await shadowAppend(env); } catch (e) { /* shadow 失敗不影響主流程 */ }
+      // 心跳：一進來就寫，證明 cron 有被觸發（診斷「資料卡住是 cron 沒跑還是跑掛」用，/health 讀）
+      const t0 = Date.now(), fired = new Date().toISOString();
+      let step = "start", err = null;
+      try { await env.BUCKET.put("meta/cron.json", JSON.stringify({ fired_at: fired, step: "running" }), { httpMetadata: { contentType: "application/json" } }); } catch (e) {}
       try {
-        const tw = new Date(Date.now() + 8 * 3600 * 1000);
-        if (tw.getUTCHours() === 3 && tw.getUTCMinutes() < 10) await weeklyReport(env);  // 每天 03:0x 更新當週週報
-      } catch (e) {}
+        step = "refresh"; await refresh(env);
+        step = "shadow"; try { await shadowAppend(env); } catch (e) { /* shadow 失敗不影響主流程 */ }
+        step = "report";
+        try {
+          const tw = new Date(Date.now() + 8 * 3600 * 1000);
+          if (tw.getUTCHours() === 3 && tw.getUTCMinutes() < 10) await weeklyReport(env);  // 每天 03:0x 更新當週週報
+        } catch (e) {}
+        step = "done";
+      } catch (e) { err = String(e); }
+      try { await env.BUCKET.put("meta/cron.json", JSON.stringify({ fired_at: fired, ms: Date.now() - t0, step, err }), { httpMetadata: { contentType: "application/json" } }); } catch (e) {}
     })());
   },
 
@@ -24,6 +33,25 @@ export default {
         if (obj) return new Response(obj.body, { headers: { ...JSONH, "cache-control": "no-store" } });
       } catch (e) {}
       return json(await buildData(env));
+    }
+
+    // 健康檢查（常設診斷）：cron 心跳 + 各資料鮮度，一眼判斷「cron 沒跑」vs「跑了但掛在哪一步」
+    if (url.pathname === "/health") {
+      const rd = async k => { try { const o = await env.BUCKET.get(k); return o ? JSON.parse(await o.text()) : null; } catch (e) { return null; } };
+      const cron = await rd("meta/cron.json");
+      const data = await rd("data.json");
+      const qpf = await rd("qpf.json");
+      const now = Date.now();
+      const cronAge = cron && cron.fired_at ? Math.round((now - Date.parse(cron.fired_at)) / 60000) : null;
+      return json({
+        now_tw: new Date(now + 8 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " "),
+        cron_last: cron,                       // fired_at/ms/step/err；step!=done 或 err 有值＝跑了但掛在該步
+        cron_age_min: cronAge,                 // >15 分＝cron 沒在跑（排程是每 10 分）
+        cron_ok: cronAge != null && cronAge <= 15,
+        data_updated_local: data ? data.updated_local : null,
+        data_source: data ? data._source : null,
+        qpf_time: qpf ? qpf.datetime : null
+      });
     }
 
     if (url.pathname === "/refresh") {

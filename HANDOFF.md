@@ -21,7 +21,13 @@
 6. **影子實驗③QPF 取值半徑**：fc 行記 `qpf_w`（`qpfAt` gridFactor=4.5 ≈6km；fusion 現行 1.5 格不動）；週報 `qpf_radius` 節（窄/寬同筆對決 accuracy/誤報/漏報）。
 7. 預設拍板均已確認：雙 horizon 文案 OK、gating OK、Open-Meteo 先上、自訂點 localStorage OK。
 
+### 事件記錄：2026-07-05 深夜 cron 停擺（23:10 之後未再觸發，07-06 早上手動 /refresh 恢復）
+- 診斷：cron 只要進來就必寫 data.json（buildData 全 catch、退 demo 也會寫），時間戳卡死＝`scheduled` 未被呼叫；`/refresh` 成功＝程式/CWA/R2 正常 → 問題在 Cloudflare 觸發層，非程式。
+- 已加常設診斷：cron 進場先寫心跳 `meta/cron.json`（fired_at/step/err），**`/health`** 一眼判斷「沒觸發」（cron_age_min>15）vs「觸發但掛在某步」（step!=done）。
+- 若再發生：後台 Worker → Settings → Triggers 確認 `*/10 * * * *` 還在（不在就重存）、Workers Builds 看部署是否成功、Observability 看 scheduled invocation 有無出現；必要時重存 cron trigger 踢一下。
+
 ### 部署後驗收（使用者 web UI 部署後打）
+- `/health` → `cron_ok: true`、`cron_last.step: "done"`（部署後等 10 分讓 cron 跑一輪）。
 - `/refresh` → 回傳 `shadow.om` 應為 `"ok"`。
 - `/shadow/peek?day=YYYYMMDD` → fc 最新行應有 `claim`/`om_mm`/`nb_r10`/`qpf_w` 欄位。
 - `/stats?weeks=1` → 應有 `scores_1h`/`scores_3h`/`source_duel`/`neighbor_signal`/`qpf_radius` 節。

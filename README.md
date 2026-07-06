@@ -17,7 +17,10 @@ node tests/offline.test.mjs      # 72 個離線合成案例（fusion/打分/校�
 UI 鐵律：燒杯水位 `.wfill` 永遠後景（z-index:0、opacity .30），卡片文字永遠前景（`.inner` z-index:2＋text-shadow）——改卡片樣式前先看 HANDOFF「前景/後景修正」。
 
 ## 主要路由
-`/`（UI）、`/data.json`、`/at?lat=&lng=&n=`、`/refresh`、`/stats?weeks=`、`/shadow/latest`、`/shadow/gen?week=`、`/shadow/file?week=`、`/shadow/calib?weeks=`、`/shadow/peek?day=`（探針）
+`/`（UI）、`/data.json`、`/at?lat=&lng=&n=`、`/refresh`、`/health`（cron 心跳+資料鮮度）、`/stats?weeks=`、`/shadow/latest`、`/shadow/gen?week=`、`/shadow/file?week=`、`/shadow/calib?weeks=`、`/shadow/peek?day=`（探針）
+
+## 資料卡住怎麼查
+先打 `/health`：`cron_age_min > 15`＝cron 沒被觸發（去 Cloudflare 後台 Worker → Settings → Triggers 看 cron 還在不在、Observability 看 scheduled 有無 invocation）；`cron_last.step != "done"` 或 `err` 有值＝cron 有跑但掛在該步。`/refresh` 能成功＝程式與金鑰正常，問題在觸發層。
 
 ## 重點
 - `wrangler.toml` 必須在 **repo 根目錄**（Cloudflare 連動 build 才會套用 assets / cron / R2）。
