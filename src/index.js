@@ -305,12 +305,13 @@ async function shadowAppend(env, src) {
     const county = st.county, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[county] || [];
     const nc = buildNowcast(st.mm_hr, st.r10, st.r1h, qv, plan, warnings[county], nowHr);
     const omv = omNext1h(om && om[i], tsMin);
+    const omj = omNext1h(om && om[i], tsMin, "jma_seamless");   // 第二影子：JMA 降水量（pop 無）
     // 影子實驗欄位（不進 fusion）：qpf_w=寬半徑 QPF、nb_r10=10km 鄰站最大 10 分雨強
     const qw = qpfAt(qpf, p.lat, p.lng, 4.5);
     const nb = neighborMaxR10(stations, p.lat, p.lng, st.id, 10);
     fcLines.push({ slot, pid: p.id, ts, qpf: qv, qpf_w: qw, nb_r10: nb, tier: nc.tier, claim: nc.claim, tier3: nc.h3_tier,
       poss: nc.possibility, trend: nc.trend, verdict: nc.verdict, warn: nc.warn, plan3: nc.evidence[2],
-      now_mm: st.mm_hr, om_mm: omv.om_mm, om_pop: omv.om_pop, station: st.id, county });
+      now_mm: st.mm_hr, om_mm: omv.om_mm, om_pop: omv.om_pop, om_jma: omj.om_mm, station: st.id, county });
     obLines.push({ slot, pid: p.id, ts, p1h: st.r1h, p10: st.r10, valid: st.r1h != null });
   }
   await r2AppendLines(env, `shadow/fc/${datePath}.ndjson`, fcLines);
@@ -319,10 +320,13 @@ async function shadowAppend(env, src) {
 }
 
 // ── Phase C 挑戰者：Open-Meteo（免費、無 key）── 純影子記錄，不進 fusion、不影響判語
+// models：best_match（正選，被計分＝實際會用的形態；pop 只有它保證有）+ jma_seamless（第二影子，
+// 東亞對流口碑待驗，只記降水量 om_jma）。ECMWF ifs025 不接（25km/3h 解析度對 1h 題太鈍）。
 async function fetchOpenMeteo(pts) {
   const lat = pts.map(p => p.lat).join(","), lon = pts.map(p => p.lng).join(",");
   const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&hourly=precipitation,precipitation_probability&forecast_hours=4&timezone=Asia%2FTaipei`;
+    `&hourly=precipitation,precipitation_probability&forecast_hours=4&timezone=Asia%2FTaipei` +
+    `&models=best_match,jma_seamless`;
   const r = await fetch(u, { headers: { accept: "application/json", "user-agent": "rainwalker" } });
   if (!r.ok) throw new Error(`open-meteo HTTP ${r.status}`);
   const j = await r.json();
@@ -333,19 +337,24 @@ function parseLocalMin(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s || "");
   return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) / 60000 : null;
 }
+// 多模型回應時變數帶 _模型名 後綴；單模型/舊格式無後綴（best_match 退回素 key 相容）
+function omSeries(H, name, model) {
+  return H[name + "_" + model] || (model === "best_match" ? H[name] : null);
+}
 // Open-Meteo hourly 值＝該時刻「往前 1 小時」累積 → 用重疊比例加權出 [T, T+60min) 的降水
-function omNext1h(one, tsMin) {
+function omNext1h(one, tsMin, model = "best_match") {
   const H = one && one.hourly;
   if (!H || !H.time || tsMin == null) return { om_mm: null, om_pop: null };
+  const P = omSeries(H, "precipitation", model), PR = omSeries(H, "precipitation_probability", model);
   let mm = 0, got = false, pop = null;
   for (let i = 0; i < H.time.length; i++) {
     const e = parseLocalMin(H.time[i]);          // 該桶覆蓋 (e-60, e]
     if (e == null) continue;
     const ovl = Math.min(e, tsMin + 60) - Math.max(e - 60, tsMin);
     if (ovl <= 0) continue;
-    const p = H.precipitation ? +H.precipitation[i] : NaN;
+    const p = P ? +P[i] : NaN;
     if (isFinite(p)) { mm += p * ovl / 60; got = true; }
-    const pr = H.precipitation_probability ? +H.precipitation_probability[i] : NaN;
+    const pr = PR ? +PR[i] : NaN;
     if (isFinite(pr)) pop = pop == null ? pr : Math.max(pop, pr);
   }
   return { om_mm: got ? +mm.toFixed(2) : null, om_pop: pop };
@@ -384,6 +393,7 @@ async function computeStats(env, dayPaths) {
   const poss = { "高": [0,0], "中": [0,0], "低": [0,0] }; const qr = [];
   const mkD = () => ({ acc: 0, fa: 0, faDen: 0, ms: 0, msDen: 0 });
   const duel = { n: 0, qpf: mkD(), om: mkD() };
+  const duelJ = { n: 0, qpf: mkD(), jma: mkD() };   // 第二挑戰者：OM-JMA（與 QPF 同筆對決）
   // 影子實驗②：鄰站領先訊號（本站乾時，nb_r10≥門檻 對 1h 後下雨的 precision/recall）
   const NB_TH = [0.5, 1, 2, 5];
   const nbs = { n: 0, rain: 0, th: NB_TH.map(t => ({ t, pred: 0, predRain: 0 })) };
@@ -406,6 +416,11 @@ async function computeStats(env, dayPaths) {
       duel.n++;
       const ar = (+o1.p1h || 0) >= 0.2;
       mark(duel.qpf, +f.qpf, ar); mark(duel.om, +f.om_mm, ar);
+    }
+    if (o1 && f.om_jma != null && f.qpf != null) {
+      duelJ.n++;
+      const ar = (+o1.p1h || 0) >= 0.2;
+      mark(duelJ.qpf, +f.qpf, ar); mark(duelJ.jma, +f.om_jma, ar);
     }
     // 影子實驗②③只看「本站當下乾」的筆（要驗的就是無雨→有雨的轉折）
     if (o1 && (+f.now_mm || 0) < 0.2) {
@@ -467,6 +482,7 @@ async function computeStats(env, dayPaths) {
     scores_1h, scores_3h: scoresOf(S3),
     scores: scores_1h,   // 舊欄位相容（= scores_1h）
     source_duel: duel.n ? { samples: duel.n, qpf: duelOf(duel.qpf, duel.n), open_meteo: duelOf(duel.om, duel.n) } : null,
+    source_duel_jma: duelJ.n ? { samples: duelJ.n, qpf: duelOf(duelJ.qpf, duelJ.n), open_meteo_jma: duelOf(duelJ.jma, duelJ.n) } : null,
     // 影子實驗②：乾→雨轉折上，鄰站訊號有多少預測力（precision=喊了多準、recall=漏報接住多少）
     neighbor_signal: nbs.n ? { samples: nbs.n, base_rate: r2(nbs.rain / nbs.n),
       thresholds: nbs.th.map(b => ({ th: b.t, n: b.pred,
@@ -550,7 +566,8 @@ async function weeklyReport(env, weekStr) {
     week: wk, generated: new Date(Date.now() + 8 * 3600 * 1000).toISOString().replace("Z", "+08:00"),
     coverage: st.coverage, coverage_3h: st.coverage_3h,
     scores: st.scores_1h, scores_1h: st.scores_1h, scores_3h: st.scores_3h,
-    source_duel: st.source_duel, neighbor_signal: st.neighbor_signal, qpf_radius: st.qpf_radius, calibration,
+    source_duel: st.source_duel, source_duel_jma: st.source_duel_jma,
+    neighbor_signal: st.neighbor_signal, qpf_radius: st.qpf_radius, calibration,
     suggestions: suggestions(st1),
     "public": publicView(st1), points: (CONFIG.shadow_points || []).map(p => p.id)
   };

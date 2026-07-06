@@ -76,10 +76,10 @@ console.log("\n[2] slotPlus 邊界");
 console.log("\n[3] computeStats 視野分離");
 {
   const fcRows = [
-    // 1h 命中（有 om：QPF 對、OM 漏）
-    { slot: "202607011000", pid: "A", tier: 2, claim: "1h", poss: "高", qpf: 2, om_mm: 0, now_mm: 0 },
-    // 1h 誤報（有 om：QPF 錯、OM 對）
-    { slot: "202607011000", pid: "B", tier: 3, claim: "1h", poss: "高", qpf: 3, om_mm: 0, now_mm: 0 },
+    // 1h 命中（有 om：QPF 對、OM 漏；JMA 對）
+    { slot: "202607011000", pid: "A", tier: 2, claim: "1h", poss: "高", qpf: 2, om_mm: 0, om_jma: 0.5, now_mm: 0 },
+    // 1h 誤報（有 om：QPF 錯、OM 對；JMA 對）
+    { slot: "202607011000", pid: "B", tier: 3, claim: "1h", poss: "高", qpf: 3, om_mm: 0, om_jma: 0, now_mm: 0 },
     // 1h 漏報
     { slot: "202607011000", pid: "C", tier: 0, claim: "1h", poss: "低", qpf: null, now_mm: 0 },
     // 舊資料（無 claim 欄位）→ 視為 1h
@@ -122,6 +122,8 @@ console.log("\n[3] computeStats 視野分離");
   ok(st.source_duel.qpf.accuracy === 0.5 && st.source_duel.open_meteo.accuracy === 0.5, "兩源各對一半", st.source_duel);
   ok(st.source_duel.open_meteo.miss === 0.5, "OM 漏報 1/2", st.source_duel.open_meteo);
   ok(st.source_duel.qpf.false_alarm === 0.5, "QPF 誤報 1/2", st.source_duel.qpf);
+  // JMA 對決：A（jma 0.5 喊雨、真下→對）、B（jma 0 沒喊、沒下→對）→ accuracy 1
+  ok(st.source_duel_jma && st.source_duel_jma.samples === 2 && st.source_duel_jma.open_meteo_jma.accuracy === 1, "JMA 對決節：2 筆全對", st.source_duel_jma);
 }
 
 // ── 4. 校準表分桶 ─────────────────────────────────────────────
@@ -175,6 +177,18 @@ console.log("\n[6] omNext1h 重疊加權");
   const t2 = W.parseLocalMin("2026-07-05T14:00");
   const r2 = W.omNext1h(one, t2);
   ok(Math.abs(r2.om_mm - 6) < 0.01, "整點對齊：恰好一桶 6.0", r2.om_mm);
+
+  // 多模型後綴格式（models=best_match,jma_seamless）：各取各的序列；素 key 相容
+  const multi = { hourly: {
+    time: ["2026-07-05T14:00", "2026-07-05T15:00"],
+    precipitation_best_match: [0, 6],
+    precipitation_probability_best_match: [0, 80],
+    precipitation_jma_seamless: [0, 2]
+  } };
+  const rb = W.omNext1h(multi, t2), rj = W.omNext1h(multi, t2, "jma_seamless");
+  ok(Math.abs(rb.om_mm - 6) < 0.01 && rb.om_pop === 80, "後綴格式：best_match 取對序列", rb);
+  ok(Math.abs(rj.om_mm - 2) < 0.01 && rj.om_pop === null, "JMA 取對序列、pop 無值＝null", rj);
+  ok(W.omNext1h(one, t2, "jma_seamless").om_mm === null, "素 key 格式下指定 jma → null（不誤用 best 序列）");
 }
 
 // ── 6b. 影子實驗②③：qpfAt 半徑 / 鄰站訊號 / 週報評分節 ───────
