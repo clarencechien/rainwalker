@@ -8,7 +8,7 @@ import fs from "node:fs";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
 const cfg = fs.readFileSync(new URL("../src/points.json", import.meta.url), "utf8");
 const body = src.replace(/^import CONFIG.*$/m, `const CONFIG=${cfg};`) +
-  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping, nearbyHint };\n";
+  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping, nearbyHint, omHint };\n";
 const W = await import("data:text/javascript;base64," + Buffer.from(body).toString("base64"));
 
 let pass = 0, fail = 0;
@@ -296,6 +296,12 @@ console.log("\n[6e] nearbyHint 提示層");
   // 提示不影響 buildNowcast 輸出（帳本欄位不變）
   const nc = W.buildNowcast(0, 0, 0, 0, [], null, 12);
   ok(nc.tier === 0 && nc.possibility === "低" && !("nb_hint" in nc), "buildNowcast 本體不含提示層（外掛欄位，A/B 不污染）", nc.tier);
+
+  // 挑戰者參考行 omHint：07-06 13:xx–14:10 情境（乾、無 QPF、OM 89%）→ 事前就給機率
+  ok(/約 9 成/.test(W.omHint(0, 0, 89) || ""), "OM 89% → 約 9 成參考行", W.omHint(0, 0, 89));
+  ok(/極高/.test(W.omHint(0, null, 100) || ""), "OM 100% → 極高", W.omHint(0, null, 100));
+  ok(W.omHint(0, 0, 44) === null, "OM 44%（低於 70 門檻）→ 不顯示");
+  ok(W.omHint(3, 0, 89) === null && W.omHint(0, 2, 89) === null && W.omHint(0, 0, null) === null, "已在下/QPF 已喊/無值 → null");
 }
 
 // ── 7. W27 情境回測：同一批輸入，舊邏輯 vs 新邏輯 ─────────────

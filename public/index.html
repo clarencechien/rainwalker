@@ -128,6 +128,7 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
   .chip.w{color:var(--warn);border-color:var(--warn)}
   .warnbar{background:rgba(242,136,78,.12);border:1px solid var(--warn);color:var(--warn);border-radius:10px;padding:9px 13px;font-size:13px;font-weight:700;margin-top:14px;text-align:center}
   .h3hint{font-size:12.5px;color:var(--i3);margin-top:8px;opacity:.9}
+  .refline{font-size:12px;color:var(--i1);margin-top:8px;opacity:.9}
   .possnote{font-weight:400;opacity:.85}
   .minput{background:var(--bg2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px 12px;font-size:14px;width:100%;font-family:inherit}
   .points{overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
@@ -266,6 +267,7 @@ function renderSimple(){
   const warnLine=nc.warn?`<div class="warnline">⚠ ${h.county||""}${nc.warn}特報（全區）</div>`:"";
   const h3Line=nc.h3_hint?`<div class="h3hint">${nc.h3_hint}</div>`:"";
   const nbLine=nc.nb_hint?`<div class="warnline">⚠ ${nc.nb_hint}</div>`:"";
+  const omLine=nc.om_hint?`<div class="refline">◇ ${nc.om_hint}</div>`:"";
   const poss=nc.possibility||"", possC=poss==="高"?"var(--i2)":poss==="中"?"var(--i3)":"var(--dry)";
   const fillNow=h.mm_hr<=0?0:Math.min(40,14+h.mm_hr/30*26);
   v.innerHTML=`<div class="wcard bigcard">
@@ -276,6 +278,7 @@ function renderSimple(){
       <div class="bigverdict" style="color:${tc};margin-top:auto">${nc.verdict||"—"}</div>
       <div class="bighint">${nc.sub||""}</div>
       ${nbLine}
+      ${omLine}
       ${h3Line}
       <span class="poss" style="color:${possC}"><span class="d" style="background:${possC}"></span>可能性 ${poss}${calibNote(h.qpf_1h,h.mm_hr)}</span>
       ${warnLine}
@@ -375,12 +378,14 @@ function renderCard(){
   const st=STATE_TXT[(plan&&plan.state)]||STATE_TXT.forecast;
   const warnB=top&&top.warn?`<div class="warnline" style="margin:10px 0 0">⚠ ${top.warn}特報（全區）</div>`:"";
   const nbB=(function(){let h=null;[pf.nowcast,pt2.nowcast].forEach(n=>{if(n&&n.nb_hint&&!h)h=n.nb_hint;});return h?`<div class="warnline" style="margin:10px 0 0">⚠ ${h}</div>`:"";})();
+  const omB=(function(){let h=null;[pf.nowcast,pt2.nowcast].forEach(n=>{if(n&&n.om_hint&&!h)h=n.om_hint;});return h?`<div class="refline">◇ ${h}</div>`:"";})();
   const h3B=top&&top.h3_hint?`<div class="h3hint">${top.h3_hint}</div>`:"";
   document.getElementById("card").innerHTML=
     `<div class="card">
       <div class="verdict" style="color:${vc}">${vtxt}</div>
       <div class="vhint">${vhint}</div>
       ${nbB}
+      ${omB}
       ${h3B}
       ${warnB}
       <div class="meta"><span class="route">${nameOf(p.from)}<span class="raq">→</span>${nameOf(p.to)}</span>
@@ -416,7 +421,7 @@ function renderDetail(label,at){
     `<div class="dpanel">
       <div class="dhead"><div><div class="dttl">${label}</div><div class="dsub">${cty}${at.here?' · 最近站 '+at.here.name:''}</div></div>
         <button class="dclose" onclick="closeDetail()">✕</button></div>
-      ${(function(){const nc=at.here&&at.here.nowcast;if(!nc)return"";const c=TIERC[nc.tier]||"var(--txt)";const wl=nc.warn?`<div class="warnline" style="margin-top:8px">⚠ ${cty}${nc.warn}特報（全區）</div>`:"";const h3=nc.h3_hint?`<div class="h3hint">${nc.h3_hint}</div>`:"";const nb=nc.nb_hint?`<div class="warnline" style="margin-top:8px">⚠ ${nc.nb_hint}</div>`:"";return `<div style="font-size:21px;font-weight:800;color:${c};margin-top:4px">${nc.verdict}</div><div style="font-size:13px;color:var(--muted);margin-top:4px">${nc.sub||""}</div>${nb}${h3}${wl}`;})()}
+      ${(function(){const nc=at.here&&at.here.nowcast;if(!nc)return"";const c=TIERC[nc.tier]||"var(--txt)";const wl=nc.warn?`<div class="warnline" style="margin-top:8px">⚠ ${cty}${nc.warn}特報（全區）</div>`:"";const h3=nc.h3_hint?`<div class="h3hint">${nc.h3_hint}</div>`:"";const nb=nc.nb_hint?`<div class="warnline" style="margin-top:8px">⚠ ${nc.nb_hint}</div>`:"";const omr=nc.om_hint?`<div class="refline">◇ ${nc.om_hint}</div>`:"";return `<div style="font-size:21px;font-weight:800;color:${c};margin-top:4px">${nc.verdict}</div><div style="font-size:13px;color:var(--muted);margin-top:4px">${nc.sub||""}</div>${nb}${omr}${h3}${wl}`;})()}
       <div class="dlabel">今日預報（${cty}逐 3 小時）</div>
       <div class="rib">${segs}</div><div class="rhrs">${hrs}</div>
       <div class="dlabel">附近測站現況（mm/hr）</div>

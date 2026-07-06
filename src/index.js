@@ -92,6 +92,10 @@ export default {
           nc = buildNowcast(here.mm_hr, here.r10, here.r1h, qv, plan, warnings[county], nowHr);
           nc.nb_hint = nearbyHint(here.mm_hr, qv,
             neighborMaxR10(stations, lat, lng, here.id, 10), qpfAt(qpf, lat, lng, 4.5));
+          try {
+            const om = await fetchOpenMeteo([{ lat, lng }]);
+            nc.om_hint = omHint(here.mm_hr, qv, omNext1h(om[0], parseLocalMin(d8.toISOString())).om_pop);
+          } catch (e) {}
         }
         return json({
           lat, lng, day_window: CONFIG.day_window || [6, 24], qpf_time: qpf ? qpf.datetime : null,
@@ -165,9 +169,10 @@ async function collectSources(env) {
   let stations = [];
   try { stations = extractStations(await cwaFetch("O-A0002-001", env.CWA_KEY)); } catch (e) {}
   const fc = await forecastCached(env);
-  let warnings = {};
+  let warnings = {}, om = null;
   try { warnings = await fetchWarnings(env.CWA_KEY); } catch (e) {}
-  return { qpf, stations, fc, warnings };
+  try { om = await fetchOpenMeteo(CONFIG.shadow_points || []); } catch (e) { om = null; }   // 影子+參考行共用，每輪一次
+  return { qpf, stations, fc, warnings, om };
 }
 // F-D0047-089 為逐 3 小時預報，25 分內走 R2 快取（跨日失效），省掉每輪的大 JSON parse
 async function forecastCached(env) {
@@ -219,6 +224,7 @@ async function buildLive(env, qpf, src) {
   const nowHr = d8.getHours() + d8.getMinutes() / 60;
 
   const fullNet = stations.length > 50;   // 只有全站清單才算鄰站訊號（子集抓法算出來會失真）
+  const tsMin = parseLocalMin(d8.toISOString());
   const points = CONFIG.points.map(p => {
     const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
     const mm = st ? st.mm_hr : 0, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[p.county] || [];
@@ -226,6 +232,8 @@ async function buildLive(env, qpf, src) {
     nc.nb_hint = nearbyHint(mm, qv,
       fullNet && st ? neighborMaxR10(stations, p.lat, p.lng, st.id, 10) : null,
       qpfAt(qpf, p.lat, p.lng, 4.5));
+    const spIdx = (CONFIG.shadow_points || []).findIndex(sp => sp.id === p.id);   // A/B/C 與抽樣點同座標
+    if (src && src.om && spIdx >= 0) nc.om_hint = omHint(mm, qv, omNext1h(src.om[spIdx], tsMin).om_pop);
     return { id: p.id, name: p.name, area: p.area, lat: p.lat, lng: p.lng,
              mm_hr: mm, qpf_1h: qv, plan, nowcast: nc };
   });
@@ -287,7 +295,8 @@ async function shadowAppend(env, src) {
     try { fc = await fetchForecastAll(env.CWA_KEY, CONFIG.day_window || [6, 24]); } catch (e) {}
     try { warnings = await fetchWarnings(env.CWA_KEY); } catch (e) {}
   }
-  try { om = await fetchOpenMeteo(pts); } catch (e) { om = null; }   // 挑戰者純影子欄位，失敗不擋主流程
+  if (src && src.om) om = src.om;   // collectSources 已抓（同一批 shadow_points），不重打
+  else { try { om = await fetchOpenMeteo(pts); } catch (e) { om = null; } }   // 挑戰者純影子欄位，失敗不擋主流程
   const tsMin = parseLocalMin(ts);
   const fcLines = [], obLines = [];
   for (let i = 0; i < pts.length; i++) {
@@ -764,6 +773,16 @@ function nearbyHint(now, q, nb, qw) {
   if (qw != null && qw >= NEAR.QPF_W) return `雷達顯示附近有雨胞（約 ${Math.round(qw)} mm），留意移入`;
   return null;
 }
+// 挑戰者參考行（07-06 14:05 案例後新增）：OM 高機率時給「明確標示為外部參考」的一行字。
+// 同 advisory 原則：不動主判語/tier/可能性/帳本，源對決照跑；對決結果爛→下架。
+const OMREF = { POP: 70 };
+function omHint(now, q, pop) {
+  if ((+now || 0) >= 0.2) return null;
+  if (q != null && q > 0) return null;
+  if (pop == null || pop < OMREF.POP) return null;
+  const c = Math.round(pop / 10);
+  return `外部模式參考：1 小時內降雨機率${c >= 10 ? "極高" : "約 " + c + " 成"}`;
+}
 function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
   now = +now || 0;
   const trend = (r10 != null && r1h != null)
@@ -811,7 +830,8 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
     tier = 0; claim = "3h";
     poss = (plan3 >= GATE.PLAN_HEAVY || wp) ? "中" : "低";   // 特報/plan3 單獨在場：最多「中」
     verdict = "這 1 小時應不會下";
-    sub = "未來 1 小時無雨勢移入，出門 OK，稍後再留意";
+    // Type-I 紀律：h3 有雨訊號時不說「出門 OK」——突發對流可能提早報到（2026-07-06 14:05 案例）
+    sub = "目前無雨勢移入；稍後預報有雨，出門帶傘保險";
   } else {
     tier = 0; poss = "低";
     verdict = "接下來不會下"; sub = "未來1小時無雨勢移入，放心出門";
