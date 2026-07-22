@@ -129,7 +129,6 @@ footer{margin-top:18px;font-size:11px;color:var(--dim);line-height:1.7;text-alig
   .chip.w{color:var(--warn);border-color:var(--warn)}
   .warnbar{background:rgba(242,136,78,.12);border:1px solid var(--warn);color:var(--warn);border-radius:10px;padding:9px 13px;font-size:13px;font-weight:700;margin-top:14px;text-align:center}
   .h3hint{font-size:12.5px;color:var(--i3);margin-top:8px;opacity:.9}
-  .refline{font-size:12px;color:var(--i1);margin-top:8px;opacity:.9}
   .possnote{font-weight:400;opacity:.85}
   .minput{background:var(--bg2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px 12px;font-size:14px;width:100%;font-family:inherit}
   .points{overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
@@ -229,22 +228,18 @@ function ev3html(nc,mm){
 const STATE_TXT={confirmed:{t:"正在下",c:"var(--i4)"},forming:{t:"快下了",c:"var(--i3)"},
   forecast:{t:"稍後可能下",c:"var(--dim)"},cleared:{t:"今天看起來乾",c:"var(--dry)"},revised:{t:"雨勢有變",c:"var(--i3)"}};
 
-/* 顯示層合成（07-06 文案融合）：本站乾且主判語未喊雨時，把 鄰區/外部參考/h3 吸收成
-   「一句大字＋一句行動」；細節進「為什麼」收合。只改口氣，不改 tier/claim/可能性（帳本照打 h1 分）。 */
+/* 顯示層合成（07-06 文案融合；07-07 PATCH 後簡化）：鄰站已升為真判語（worker 出「鄰區在下」），
+   OM 參考行經 15k 筆源對決下架。此處只剩：僅 h3 訊號時把「稍後」吸收成一句。 */
 function speak(nc){
   if(!nc) return null;
   const rainingNow=(nc.evidence&&nc.evidence[0]>=0.2);
   if(rainingNow||(nc.tier||0)>=1) return null;             // 主判語本來就有立場，照舊
-  if(nc.nb_hint) return {v:"雨快到了",s:"附近正在下雨，出門帶傘",c:"var(--i3)"};
-  if(nc.om_hint) return {v:"等下可能下",s:"降雨機率偏高，出門帶傘",c:"var(--i3)"};
   if(nc.h3_hint) return {v:"現在沒雨",s:nc.h3_hint+"・帶傘保險",c:null};
   return null;
 }
-/* 進階卡/浮層用：三種提示只挑最重要的一行（鄰區＞外部＞稍後） */
+/* 進階卡/浮層用：主判語有立場時，h3 補充單獨成行 */
 function hintLine(nc){
   if(!nc) return "";
-  if(nc.nb_hint) return `<div class="warnline">⚠ ${nc.nb_hint}</div>`;
-  if(nc.om_hint) return `<div class="refline">◇ ${nc.om_hint}</div>`;
   if(nc.h3_hint) return `<div class="h3hint">${nc.h3_hint}</div>`;
   return "";
 }
@@ -288,12 +283,8 @@ function renderSimple(){
   const h=HERE.here, nc=h.nowcast||{};
   const tier=(nc.tier!=null)?nc.tier:classify(h.mm_hr).t;
   const tc=TIERC[tier]||"var(--txt)";
-  const whyExtra=[];
-  if(nc.nb_hint) whyExtra.push(`<span class="chip w">${nc.nb_hint}</span>`);
-  if(nc.om_hint) whyExtra.push(`<span class="chip">${nc.om_hint}</span>`);
   const sp=speak(nc);
-  if(sp&&nc.h3_hint&&sp.v!=="現在沒雨") whyExtra.push(`<span class="chip">${nc.h3_hint}</span>`);
-  const why=(nc.why||[]).map(w=>`<span class="chip${/特報/.test(w)?' w':''}">${w}</span>`).join("")+whyExtra.join("");
+  const why=(nc.why||[]).map(w=>`<span class="chip${/特報/.test(w)?' w':''}">${w}</span>`).join("");
   const warnLine=nc.warn?`<div class="warnline">⚠ ${h.county||""}${nc.warn}特報（全區）</div>`:"";
   const h3Line=(!sp&&nc.h3_hint)?`<div class="h3hint">${nc.h3_hint}</div>`:"";   // 主判語有立場時 h3 才單獨成行
   const vTxt=sp?sp.v:(nc.verdict||"—"), vSub=sp?sp.s:(nc.sub||"");
@@ -409,10 +400,8 @@ function renderCard(){
   }
   const st=STATE_TXT[(plan&&plan.state)]||STATE_TXT.forecast;
   const warnB=top&&top.warn?`<div class="warnline" style="margin:10px 0 0">⚠ ${top.warn}特報（全區）</div>`:"";
-  // 三種提示只出最重要的一行（鄰區＞外部＞稍後），避免疊字
-  const hintB=(function(){const ns=[pf.nowcast,pt2.nowcast].filter(Boolean);
-    for(const k of ["nb_hint","om_hint","h3_hint"]){const n=ns.find(x=>x[k]);if(n)return hintLine({[k]:n[k]});}
-    return "";})();
+  const hintB=(function(){const n=[pf.nowcast,pt2.nowcast].filter(Boolean).find(x=>x.h3_hint);
+    return n?hintLine(n):"";})();
   document.getElementById("card").innerHTML=
     `<div class="card">
       <div class="verdict" style="color:${vc}">${vtxt}</div>

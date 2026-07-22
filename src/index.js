@@ -89,13 +89,8 @@ export default {
         const qv = qpfAt(qpf, lat, lng);
         let nc = null;
         if (here) {
-          nc = buildNowcast(here.mm_hr, here.r10, here.r1h, qv, plan, warnings[county], nowHr);
-          nc.nb_hint = nearbyHint(here.mm_hr, qv,
-            neighborMaxR10(stations, lat, lng, here.id, 10), qpfAt(qpf, lat, lng, 4.5));
-          try {
-            const om = await fetchOpenMeteo([{ lat, lng }]);
-            nc.om_hint = omHint(here.mm_hr, qv, omNext1h(om[0], parseLocalMin(d8.toISOString())).om_pop);
-          } catch (e) {}
+          const nb = neighborMaxR10(stations, lat, lng, here.id, 10);
+          nc = buildNowcast(here.mm_hr, here.r10, here.r1h, qv, plan, warnings[county], nowHr, nb);
         }
         return json({
           lat, lng, day_window: CONFIG.day_window || [6, 24], qpf_time: qpf ? qpf.datetime : null,
@@ -224,16 +219,11 @@ async function buildLive(env, qpf, src) {
   const nowHr = d8.getHours() + d8.getMinutes() / 60;
 
   const fullNet = stations.length > 50;   // 只有全站清單才算鄰站訊號（子集抓法算出來會失真）
-  const tsMin = parseLocalMin(d8.toISOString());
   const points = CONFIG.points.map(p => {
     const st = (p.station && byId[p.station]) ? byId[p.station] : nearestStation(stations, p.lat, p.lng);
     const mm = st ? st.mm_hr : 0, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[p.county] || [];
-    const nc = buildNowcast(mm, st ? st.r10 : null, st ? st.r1h : null, qv, plan, warnings[p.county], nowHr);
-    nc.nb_hint = nearbyHint(mm, qv,
-      fullNet && st ? neighborMaxR10(stations, p.lat, p.lng, st.id, 10) : null,
-      qpfAt(qpf, p.lat, p.lng, 4.5));
-    const spIdx = (CONFIG.shadow_points || []).findIndex(sp => sp.id === p.id);   // A/B/C 與抽樣點同座標
-    if (src && src.om && spIdx >= 0) nc.om_hint = omHint(mm, qv, omNext1h(src.om[spIdx], tsMin).om_pop);
+    const nb = fullNet && st ? neighborMaxR10(stations, p.lat, p.lng, st.id, 10) : null;
+    const nc = buildNowcast(mm, st ? st.r10 : null, st ? st.r1h : null, qv, plan, warnings[p.county], nowHr, nb);
     return { id: p.id, name: p.name, area: p.area, lat: p.lat, lng: p.lng,
              mm_hr: mm, qpf_1h: qv, plan, nowcast: nc };
   });
@@ -303,12 +293,12 @@ async function shadowAppend(env, src) {
     const p = pts[i];
     const st = nearestStation(stations, p.lat, p.lng); if (!st) continue;
     const county = st.county, qv = qpfAt(qpf, p.lat, p.lng), plan = fc[county] || [];
-    const nc = buildNowcast(st.mm_hr, st.r10, st.r1h, qv, plan, warnings[county], nowHr);
+    const nb = neighborMaxR10(stations, p.lat, p.lng, st.id, 10);
+    const nc = buildNowcast(st.mm_hr, st.r10, st.r1h, qv, plan, warnings[county], nowHr, nb);
     const omv = omNext1h(om && om[i], tsMin);
     const omj = omNext1h(om && om[i], tsMin, "jma_seamless");   // 第二影子：JMA 降水量（pop 無）
-    // 影子實驗欄位（不進 fusion）：qpf_w=寬半徑 QPF、nb_r10=10km 鄰站最大 10 分雨強
+    // 影子欄位（OM/JMA=幕後看門狗與備援候選、qpf_w=負結果存證，均不進 fusion；nb 已進判語仍照記）
     const qw = qpfAt(qpf, p.lat, p.lng, 4.5);
-    const nb = neighborMaxR10(stations, p.lat, p.lng, st.id, 10);
     fcLines.push({ slot, pid: p.id, ts, qpf: qv, qpf_w: qw, nb_r10: nb, tier: nc.tier, claim: nc.claim, tier3: nc.h3_tier,
       poss: nc.possibility, trend: nc.trend, verdict: nc.verdict, warn: nc.warn, plan3: nc.evidence[2],
       now_mm: st.mm_hr, om_mm: omv.om_mm, om_pop: omv.om_pop, om_jma: omj.om_mm, station: st.id, county });
@@ -779,34 +769,18 @@ function actionHint(tier, wp) {
   return "放心出門";
 }
 // A2 可能性 gating 門檻（人工調參區；依 spec §6 絕不自動改）
-const GATE = { Q_HI: 1, PLAN_HEAVY: 8 };
-// 鄰區提示層（2026-07-06 中和案例後新增）：純提示、不動主判語/tier/可能性/shadow 帳本，
-// 影子實驗 A/B 不受污染；四週後 neighbor_signal/qpf_radius 數據好→升級進 gating、爛→下架。門檻人工調。
-const NEAR = { NB_R10: 2, QPF_W: 1 };
-function nearbyHint(now, q, nb, qw) {
-  if ((+now || 0) >= 0.2) return null;                 // 已在下，主判語自己會講
-  if (q != null && q > 0) return null;                 // 主判語已喊「等一下會下」
-  if (nb != null && nb >= NEAR.NB_R10) return `鄰區正在下雨（10 公里內約 ${Math.round(nb)} mm/h），可能移入`;
-  if (qw != null && qw >= NEAR.QPF_W) return `雷達顯示附近有雨胞（約 ${Math.round(qw)} mm），留意移入`;
-  return null;
-}
-// 挑戰者參考行（07-06 14:05 案例後新增）：OM 高機率時給「明確標示為外部參考」的一行字。
-// 同 advisory 原則：不動主判語/tier/可能性/帳本，源對決照跑；對決結果爛→下架。
-const OMREF = { POP: 70 };
-function omHint(now, q, pop) {
-  if ((+now || 0) >= 0.2) return null;
-  if (q != null && q > 0) return null;
-  if (pop == null || pop < OMREF.POP) return null;
-  const c = Math.round(pop / 10);
-  return `外部模式參考：1 小時內降雨機率${c >= 10 ? "極高" : "約 " + c + " 成"}`;
-}
-function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
+// NB_*：鄰站訊號門檻（PATCH-2026-07 以 n=13,197 實測拍板進 fusion：
+// th≥2 precision .29／th≥5 precision .44，vs base_rate .05；recall .69）。
+// 舊 nearbyHint/omHint 提示層同 patch 移除：鄰站改由判語背書；OM 參考行經 15k 筆源對決
+// 判出局（OM acc .75 vs QPF .86，z=24.6）；寬 QPF 負結果收案（.82 vs .89）。
+const GATE = { Q_HI: 1, PLAN_HEAVY: 8, NB_MID: 2, NB_HIGH: 5 };
+function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr, nb = null) {
   now = +now || 0;
   const trend = (r10 != null && r1h != null)
     ? (r10 > r1h * 1.3 + 0.2 ? "rising" : (r10 < r1h * 0.7 - 0.05 ? "falling" : "steady")) : "steady";
   const fut = (plan || []).filter(b => b.to > nowHr);
-  const nb = fut[0] || null;
-  const plan3 = nb ? nb.mm_hr : 0;
+  const nxb = fut[0] || null;   // 下一個預報區塊（勿與參數 nb=鄰站雨強混淆）
+  const plan3 = nxb ? nxb.mm_hr : 0;
   const wp = (warn && warn.length) ? warn[0] : null;
   const q = (qpf == null) ? null : +qpf;
   const raining = now >= 0.2;
@@ -814,9 +788,9 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
 
   // h3（稍後提示）：縣市 plan3 + 特報（縣市級、長視野）→ 只做副提示，不主導主判語、不抬可能性
   let h3_tier = null, h3_hint = null;
-  if (nb) {
+  if (nxb) {
     h3_tier = tierOf(plan3) || 1;
-    h3_hint = `稍後 ${nb.from} 時前後全區可能有${W(h3_tier)}${wp ? "（" + wp + "特報生效中）" : ""}`;
+    h3_hint = `稍後 ${nxb.from} 時前後全區可能有${W(h3_tier)}${wp ? "（" + wp + "特報生效中）" : ""}`;
   } else if (wp) {
     h3_tier = 3;
     h3_hint = `${wp}特報生效中，稍後留意天氣變化`;
@@ -842,6 +816,19 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
     poss = (q >= GATE.Q_HI || (trend === "rising" && now > 0)) ? "高" : "中";
     verdict = tier >= 5 ? "馬上有豪雨" : tier >= 4 ? `等下會下${W(tier)}` : `等一下會下${W(tier)}`;
     sub = `雷達估計約 1 小時內報到 · ${actionHint(tier, wp)}`;
+  } else if (nb != null && nb >= GATE.NB_MID) {
+    // 鄰站領先訊號（移入型降雨）：由判語背書，claim=1h 進帳受考。
+    // 可能性依 18,352 筆全期回測校準（增量筆實際下雨率：nb≥5→0.255、nb2–5→0.084；
+    // patch 原估 .44 為邊際關聯高估，回測修訂）：nb≥5→中、nb2–5→低，維持 高≈.46 桶純度。
+    if (nb >= GATE.NB_HIGH) {
+      tier = 2; poss = "中";
+      verdict = "鄰區在下，可能移入";
+      sub = `10 公里內鄰站約 ${Math.round(nb)} mm/h，雨可能很快到 · 帶傘出門`;
+    } else {
+      tier = 1; poss = "低";
+      verdict = "鄰區有雨，留意移入";
+      sub = "附近測站在下雨，出門帶把傘保險";
+    }
   } else if (h3_tier != null) {
     // 1h 內無實證、只有縣市級長視野訊號：主判語誠實說「這 1 小時不會下」，稍後資訊放 h3_hint
     tier = 0; claim = "3h";
@@ -858,7 +845,8 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr) {
   const why = [`雨量站 ${now} mm`];
   if (trend === "rising") why.push("趨勢↑"); else if (trend === "falling") why.push("趨勢↓");
   if (q != null) why.push(`未來1時 QPF ${q} mm`);
-  if (nb) why.push(`預報 ${nb.from}時${nb.pop ? " " + nb.pop + "%" : ""}`);
+  if (nb != null && nb > 0) why.push(`鄰站 ${nb} mm/h`);
+  if (nxb) why.push(`預報 ${nxb.from}時${nxb.pop ? " " + nxb.pop + "%" : ""}`);
   if (wp) why.push(`⚠ ${wp}特報`);
   return { verdict, sub, possibility: poss, tier, trend, evidence: ev, why, warn: wp,
            h3_hint, h3_tier, claim };

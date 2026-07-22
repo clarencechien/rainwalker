@@ -8,7 +8,7 @@ import fs from "node:fs";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
 const cfg = fs.readFileSync(new URL("../src/points.json", import.meta.url), "utf8");
 const body = src.replace(/^import CONFIG.*$/m, `const CONFIG=${cfg};`) +
-  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping, nearbyHint, omHint };\n";
+  "\nexport { buildNowcast, computeStats, calibrationFromDays, calibBucket, slotPlus, suggestions, omNext1h, parseLocalMin, weekDayPaths, tierMm, qpfAt, neighborMaxR10, parseQpfRaw, extractQpfBox, qpfIsFresh, housekeeping };\n";
 const W = await import("data:text/javascript;base64," + Buffer.from(body).toString("base64"));
 
 let pass = 0, fail = 0;
@@ -292,30 +292,32 @@ console.log("\n[6d] QPF 時效守衛 / housekeeping");
   ok(deleted.every(k => k.includes(oldK)) && !deleted.some(k => k.includes(newK)), "只刪 35 天前", deleted);
 }
 
-// ── 6e. 鄰區提示層（advisory-only，不動判語/帳本）─────────────
-console.log("\n[6e] nearbyHint 提示層");
+// ── 6e. 鄰站訊號進 fusion（PATCH-2026-07）──────────────────
+console.log("\n[6e] 鄰站訊號判語（nb 進 gating）");
 {
-  // 07-06 14:20 永和實錄：本站乾、窄 QPF=0、鄰站 nb=3 → 提示觸發
-  ok(/鄰區正在下雨/.test(W.nearbyHint(0, 0, 3, 1.9) || ""), "永和 14:20 情境：鄰站 3mm/h 觸發提示", W.nearbyHint(0, 0, 3, 1.9));
-  // 07-06 14:20 北投實錄：nb=0、寬 QPF=16 → 雷達提示
-  ok(/雨胞/.test(W.nearbyHint(0, 0, 0, 16) || ""), "北投 14:20 情境：寬 QPF 16 觸發雷達提示", W.nearbyHint(0, 0, 0, 16));
-  // 14:10 全盲情境：什麼都沒有 → 無提示（不亂叫）
-  ok(W.nearbyHint(0, 0, 0, 0) === null, "全零 → 不提示");
-  // 已在下 → 主判語自己講，不疊提示
-  ok(W.nearbyHint(0.5, 0, 3, 5) === null, "本站已在下 → null");
-  // 主判語已喊「等一下會下」（q>0）→ 不疊提示
-  ok(W.nearbyHint(0, 2, 3, 5) === null, "QPF 已喊雨 → null");
-  // 門檻以下不叫
-  ok(W.nearbyHint(0, 0, 1, 0.5) === null, "nb<2 且 qw<1 → null");
-  // 提示不影響 buildNowcast 輸出（帳本欄位不變）
-  const nc = W.buildNowcast(0, 0, 0, 0, [], null, 12);
-  ok(nc.tier === 0 && nc.possibility === "低" && !("nb_hint" in nc), "buildNowcast 本體不含提示層（外掛欄位，A/B 不污染）", nc.tier);
-
-  // 挑戰者參考行 omHint：07-06 13:xx–14:10 情境（乾、無 QPF、OM 89%）→ 事前就給機率
-  ok(/約 9 成/.test(W.omHint(0, 0, 89) || ""), "OM 89% → 約 9 成參考行", W.omHint(0, 0, 89));
-  ok(/極高/.test(W.omHint(0, null, 100) || ""), "OM 100% → 極高", W.omHint(0, null, 100));
-  ok(W.omHint(0, 0, 44) === null, "OM 44%（低於 70 門檻）→ 不顯示");
-  ok(W.omHint(3, 0, 89) === null && W.omHint(0, 2, 89) === null && W.omHint(0, 0, null) === null, "已在下/QPF 已喊/無值 → null");
+  const P = (nb) => W.buildNowcast(0, 0, 0, 0, [], null, 12, nb);
+  // nb≥5（全期回測增量筆實際下雨率 .255 → 可能性「中」）→ tier2 中 claim=1h 帶傘
+  let n = P(6);
+  ok(n.tier === 2 && n.possibility === "中" && n.claim === "1h", "nb=6：tier2/中/claim=1h（回測校準）", [n.tier, n.possibility, n.claim]);
+  ok(/鄰區在下/.test(n.verdict) && /帶傘/.test(n.sub), "nb=6：判語背書＋帶傘", n.verdict);
+  ok(n.why.some(w => /鄰站 6/.test(w)), "why 含鄰站數值", n.why);
+  // 2≤nb<5（precision .29）→ tier1 中「留意」
+  n = P(3);
+  ok(n.tier === 1 && n.possibility === "低" && n.claim === "1h" && /鄰區有雨/.test(n.verdict), "nb=3：tier1/低/留意（回測 .084）", [n.tier, n.possibility, n.verdict]);
+  // nb<2 → 不觸發（回到 clear/h3 路徑）
+  n = P(1);
+  ok(n.tier === 0 && n.possibility === "低" && /不會下/.test(n.verdict), "nb=1：低於門檻不觸發", n.verdict);
+  // 優先序：正在下 > QPF > 鄰站 > h3
+  n = W.buildNowcast(3, 3, 3, 0, [], null, 12, 6);
+  ok(/正在下/.test(n.verdict), "正在下時鄰站不搶話", n.verdict);
+  n = W.buildNowcast(0, 0, 0, 5, [], null, 12, 6);
+  ok(n.tier === 3 && /等/.test(n.verdict), "QPF 喊雨時鄰站不搶話", n.verdict);
+  // 鄰站 + h3 並存：鄰站贏（1h 實證 > 長視野），h3_hint 仍附掛
+  n = W.buildNowcast(0, 0, 0, 0, [{ from: 15, to: 18, pop: 80, mm_hr: 8 }], null, 12, 6);
+  ok(/鄰區在下/.test(n.verdict) && n.claim === "1h" && !!n.h3_hint, "鄰站>h3、h3_hint 保留", [n.verdict, n.claim]);
+  // 相容：不傳 nb（7 參數舊呼叫）→ 不觸發、不炸
+  n = W.buildNowcast(0, 0, 0, 0, [], null, 12);
+  ok(n.tier === 0 && n.possibility === "低", "省略 nb 參數相容", n.tier);
 }
 
 // ── 7. W27 情境回測：同一批輸入，舊邏輯 vs 新邏輯 ─────────────
