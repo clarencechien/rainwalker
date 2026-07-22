@@ -1,53 +1,51 @@
-# rainwalker 雨縫 — 單一 Worker（UI + data.json + cron）
+# rainwalker 雨縫 — 雙北通勤降雨決策 PWA
 
-雙北通勤降雨決策 PWA：五源融合（雨量站現況/趨勢、雷達 QPF、縣市 3h 預報、特報）→ 一句有立場、可行動、敢公開準度的判語。全部手動 web 操作、無需 CLI。一個 Worker 同時：服務 UI、用 R2 出 `/data.json`、跑 cron 寫 R2 + shadow log 自動對答案。
+CWA 多源融合（雨量站現況/趨勢＋**鄰站訊號**＋雷達 QPF＋縣市 3h 預報＋特報）→
+**一句有立場、可行動的判語**，Type-I 偏向（寧可誤報、最怕漏報），並以 shadow log
+自動對答案、公開自己的準度。單一 Cloudflare Worker（UI + `/data.json` + cron），
+全 web UI 操作、無需 CLI。線上：https://rainwalker.ai-apps.work/
 
-## 系統現況（2026-07-06）
-- **接手開發前必讀：`HANDOFF.md` 開頭「接手快照」**（已完成事項＋TODO＋驗收清單），背景見 `CONTEXT_COMPACT.md`；shadow 規格見 `SHADOWLOG_SPEC.md`（改 shadow 程式先改 spec）。
-- **已升級 Workers Paid（$5/月）**：免費 10ms CPU 軟性執法曾造成 cron 全滅（HANDOFF 事件記錄）；CPU 瘦身保留。housekeeping 已上線（每日 03:3x 刪 35 天前 shadow 日檔，週報永存）；QPF >70 分視同無（時效守衛）。
-- 判語為雙 horizon：主判語只由 1h 實證出（現況/趨勢/QPF），縣市預報+特報降為「稍後…」副提示（`h3_hint`），可能性有 gating。另有**鄰區提示層** `nb_hint`（advisory-only：鄰站≥2mm/h 或寬 QPF≥1mm 時的橘字提示，不動判語與帳本，待四週數據決定升級或下架）。
-- shadow log 每 10 分對 8 個固定點記錄預報與實測、自動對答案；週報含 `scores_1h`/`scores_3h`/`calibration`（QPF 校準表）/`source_duel`（vs Open-Meteo）/`neighbor_signal`（鄰站領先訊號實驗）/`qpf_radius`（取值半徑實驗）。影子實驗一律不進 fusion，四週看數據人工拍板。
-- UI：精簡（預設）/進階雙模式；換地點＝雙北行政區快選或目前定位；自訂點/路徑存 localStorage（上限 8 點，不進 shadow 統計）。
+## 文件地圖（接手先讀）
+| 文件 | 內容 |
+|---|---|
+| **`docs/HANDOFF.md`** | **接手規格**：架構/資料源/fusion/前端現狀＋工程紀律＋**下一動驗證清單** |
+| `docs/SHADOWLOG_SPEC.md` | shadow log 規格（schema/打分/裁決原則）——改 shadow 程式**先改 spec** |
+| `docs/archive/` | 封存：原始工單與情境（07-05）、逐日 session 記錄、PATCH-2026-07 決策書（鄰站進 fusion 的信度效度與 18k 筆回測） |
+
+## 現狀速覽（2026-07-22）
+- **Fusion**：正在下 → QPF → **鄰站訊號**（07-22 進 fusion：nb≥5「鄰區在下」/nb2–5「留意移入」，
+  claim=1h 進帳）→ h3 副提示 → 無雨。門檻集中 `GATE` 常數，人工調參、絕不自動改。
+- **成績**（n≈15k）：方向命中 0.91／誤報 0.49／漏報 0.02／「高」實際下雨率 0.46
+  （W27 起點 0.45／0.99／0／0.02）。
+- **畫面全 CWA**；Open-Meteo/JMA 降級幕後（健康監測/備援候選，影子欄位續記）。
+- **Workers Paid $5/月**（免費 10ms CPU 曾致 cron 全滅）；cron 每 10 分，週報 03:0x、
+  housekeeping 03:3x（35 天保留）。SW cache **rain-v18**。
 
 ## 開發驗證（改完必跑）
+```bash
+node tests/offline.test.mjs      # 98 個離線合成案例（fusion/打分/校準/回測），必須全綠
+# worker 語法：sed 's/^import CONFIG.*/const CONFIG={};/' src/index.js > /tmp/w.mjs && node --check /tmp/w.mjs
+# 前端：抽出 <script> 做 node --check，並 bump public/sw.js 的 CACHE 版本
 ```
-node tests/offline.test.mjs      # 72 個離線合成案例（fusion/打分/校準/回測）
-```
-改 worker：`sed 's/^import CONFIG.*/const CONFIG={};/' src/index.js > /tmp/w.mjs && node --check /tmp/w.mjs`
-改前端：抽出 `<script>` 做 `node --check`，並 **bump `public/sw.js` 的 CACHE 版本**（現為 rain-v12）。
-UI 鐵律：燒杯水位 `.wfill` 永遠後景（z-index:0、opacity .30），卡片文字永遠前景（`.inner` z-index:2＋text-shadow）——改卡片樣式前先看 HANDOFF「前景/後景修正」。
+**紀律**：一次一針；cron 路徑禁止重複 parse 大 JSON；影子欄位先行＋增量回測＋人工拍板
+（絕不自動改門檻、不做 ML）；`.wfill` 永遠後景、文字永遠前景。
 
 ## 主要路由
-`/`（UI）、`/data.json`、`/at?lat=&lng=&n=`、`/refresh`、`/health`（cron 心跳+資料鮮度）、`/stats?weeks=`、`/shadow/latest`、`/shadow/gen?week=`、`/shadow/file?week=`、`/shadow/calib?weeks=`、`/shadow/peek?day=`（探針）
+`/`（UI）、`/data.json`、`/at?lat=&lng=&n=`、`/refresh`、`/health`（cron 心跳+資料鮮度）、
+`/stats?weeks=`、`/shadow/latest`、`/shadow/gen?week=`、`/shadow/file?week=`、
+`/shadow/calib?weeks=`、`/shadow/peek?day=&slot=&pid=`（常設取證）
 
 ## 資料卡住怎麼查
-先打 `/health`：`cron_age_min > 15`＝cron 沒在跑；`cron_last.step != "done"` 或 `err` 有值＝cron 有跑但掛在該步。再看後台 Cron events：**Exceeded Resources（CPU 10ms）＝免費方案 CPU 超限**（2026-07-05 事件，已做瘦身：來源共用一次 parse、QPF 定向掃描、預報 R2 快取；若復發見 HANDOFF 事件記錄的兩個選項）。`/refresh` 能成功＝程式與金鑰正常。
-**CPU 紀律**：cron 路徑上禁止重複 parse 大 JSON；新增資料源先估 CPU（免費上限 10ms/次）。
-**判讀餘裕**：`/health` 的 `wall_ms` 是掛鐘時間（大多在等網路），與 CPU 上限無關；真實 CPU 用量只能看後台 Cron events 成功事件的 CPU 欄或 Metrics 的 CPU P50/P99——成功事件普遍 ≥7ms 才算貼線。
+`/health`：`cron_age_min>15`＝cron 沒在跑；`cron_last.step!="done"` 或 `err`＝掛在該步。
+後台 Cron events 見 **Exceeded Resources＝CPU 超限**（07-05 事件，已升付費＋瘦身）。
+逐時取證：`/shadow/peek?day=YYYYMMDD&slot=YYYYMMDDHH&pid=A` 看 now_mm/p10（觀測層）、
+qpf（雷達）、nb_r10（鄰站）、om_*（外部對照）。
 
-## 重點
-- `wrangler.toml` 必須在 **repo 根目錄**（Cloudflare 連動 build 才會套用 assets / cron / R2）。
-- R2 bucket 名稱必須等於 `wrangler.toml` 裡的 `bucket_name`（預設 `rainwalker`）。
+## 部署（Cloudflare Workers Builds，web UI）
+1. repo 根目錄需含 `wrangler.toml`（assets/cron/R2/observability 由它套用）。
+2. R2 bucket 名稱=`rainwalker`；Secret `CWA_KEY`（值要無尾端換行）。
+3. push → 自動 build；若 Bindings/Cron 沒出現，後台手動補（Worker → Settings）。
 
-## 步驟（接續你現有的 rainwalker Worker）
-1. 把這包檔案放到 GitHub repo **根目錄**（`wrangler.toml`、`public/`、`src/` 都在最上層），push。
-2. R2：後台 → R2 → 確認有一個 bucket 叫 `rainwalker`（沒有就 Create bucket，名稱填 `rainwalker`）。
-3. 你的 rainwalker Worker 連著這個 repo，push 後會自動 rebuild。build 完成後到
-   Worker → Settings 確認：
-   - **Bindings** 出現 R2：變數名 `BUCKET` → bucket `rainwalker`
-   - **Triggers / Cron** 出現 `*/10 * * * *`
-   （這些由 `wrangler.toml` 自動設定；若沒出現，見下方「手動補」）
-4. 開 `https://rainwalker.sw-tech.workers.dev/` → UI 載入、抓同源 `/data.json` → 看到示範資料。
-5. 開一次 `https://rainwalker.sw-tech.workers.dev/refresh` → 把 data.json 寫進 R2；之後 `/data.json` 就從 R2 來。
-6. `DATA_URL` 已是同源 `/data.json`，不用再改。
-
-## CWA 授權碼（之後接真資料要用，先設好）
-Worker → Settings → Variables and Secrets → Add：
-- 名稱 `CWA_KEY`、值=你的新授權碼、類型 **Secret(加密)**。
-
-## 若 build 後 Bindings/Cron 沒自動出現（手動補）
-- R2：Worker → Settings → Bindings → Add → R2 bucket → 變數名 `BUCKET` → 選 `rainwalker`。
-- Cron：Worker → Settings → Triggers → Cron Triggers → Add → `*/10 * * * *`。
-
-## 下一步
-見 `HANDOFF.md`「接手快照」的 TODO：等 shadow 樣本累積約四週（W31±）後，依 `source_duel`/`neighbor_signal`/`qpf_radius`/`calibration` 數據人工裁決各實驗去留；housekeeping（刪舊 log 留週報）尚未實作。
+## 下一動
+見 `docs/HANDOFF.md` §8：部署驗收鄰站判語 → 下份週報驗證升級代價（miss 不升、誤報 ≤0.55、
+中桶升到 ~0.1–0.25）→ 移入型雨實戰 → 每週幕後看門狗（QPF vs OM/JMA 落差=CWA 劣化警報）。

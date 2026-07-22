@@ -1,6 +1,6 @@
 # SHADOWLOG_SPEC v2 — 雨縫 shadow log 規格（2026-07-06 依現行實作重寫）
 
-> 原 v1 未入庫（僅存於 CONTEXT_COMPACT §6 摘要）；本版為對照 `src/index.js` 現行程式重寫，
+> 原 v1 未入庫（僅存於 `docs/archive/CONTEXT_COMPACT-2026-07-05.md` §6 摘要）；本版對照 `src/index.js` 現行程式重寫，
 > 之後改 shadow 相關程式**先改這份 spec 再改 code**。
 
 ## 1. 目的
@@ -49,7 +49,7 @@
 - 週報分節：`scores_1h`、`scores_3h`（`scores` = scores_1h 舊欄位相容）；`public.*` 以 1h 為口徑。
 
 ## 5. 影子實驗評分節（樣本=「本站當下乾」的筆）
-> **裁決記錄（2026-07-22，PATCH-2026-07）**：鄰站訊號**已升入 fusion**（nb≥5→tier2中／nb2–5→tier1低，
+> **裁決記錄（2026-07-22，`docs/archive/PATCH-2026-07-promote-neighbor.md`）**：鄰站訊號**已升入 fusion**（nb≥5→tier2中／nb2–5→tier1低，
 > 可能性依 18,352 筆回測增量精度 .255/.084 校準）；OM 進 fusion **出局**（z=24.6）；寬 QPF **負結果收案**
 >（z=16.2）。影子欄位全數續記（OM=健康監測、JMA=備援候選、qpf_w/nb_r10=持續複驗）。
 - `source_duel`：CWA-QPF vs Open-Meteo best_match（accuracy／false_alarm／miss，下雨=0.2）。

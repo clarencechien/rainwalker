@@ -769,7 +769,7 @@ function actionHint(tier, wp) {
   return "放心出門";
 }
 // A2 可能性 gating 門檻（人工調參區；依 spec §6 絕不自動改）
-// NB_*：鄰站訊號門檻（PATCH-2026-07 以 n=13,197 實測拍板進 fusion：
+// NB_*：鄰站訊號門檻（docs/archive/PATCH-2026-07 以 n=13,197 實測拍板進 fusion：
 // th≥2 precision .29／th≥5 precision .44，vs base_rate .05；recall .69）。
 // 舊 nearbyHint/omHint 提示層同 patch 移除：鄰站改由判語背書；OM 參考行經 15k 筆源對決
 // 判出局（OM acc .75 vs QPF .86，z=24.6）；寬 QPF 負結果收案（.82 vs .89）。
