@@ -36,14 +36,17 @@ console.log("\n[1] buildNowcast 雙 horizon / gating");
   n = W.buildNowcast(0, 0, 0, null, [{ from: 15, to: 18, pop: 40, mm_hr: 2 }], null, 12);
   ok(n.possibility === "低" && n.claim === "3h", "輕 plan3 無特報：可能性=低", n.possibility);
 
-  // QPF 驅動：q=5 ≥ 門檻 → 高；q=0.5 → 中
+  // QPF 校準 gating（PATCH-2026-08）：q<10 弱證據降級、文案仍帶傘；q≥10 維持喊雨
   n = W.buildNowcast(0, 0, 0, 5, [], null, 12);
-  ok(n.tier === 3 && n.possibility === "高" && n.claim === "1h", "QPF=5：tier3/高/claim=1h", [n.tier, n.possibility, n.claim]);
+  ok(n.tier === 1 && n.possibility === "中" && n.claim === "1h" && /可能有短暫雨/.test(n.verdict) && /傘/.test(n.sub),
+     "QPF=5（弱證據）：gated tier1/中/帶傘文案", [n.tier, n.possibility, n.verdict]);
   n = W.buildNowcast(0, 0, 0, 0.5, [], null, 12);
-  ok(n.possibility === "中", "QPF=0.5（低於門檻）：可能性=中", n.possibility);
-  // rising + 地面有雨跡 + 小 QPF → 高
+  ok(n.tier === 1 && n.possibility === "低" && /傘/.test(n.sub), "QPF=0.5：gated tier1/低/仍帶傘", [n.tier, n.possibility]);
+  n = W.buildNowcast(0, 0, 0, 15, [], null, 12);
+  ok(n.tier === 4 && n.possibility === "高" && /等下會下大雨/.test(n.verdict), "QPF=15（強證據）：照舊喊雨", [n.tier, n.verdict]);
+  // rising + 地面有雨跡 + 小 QPF → 雙證據例外不 gate，可能性=高
   n = W.buildNowcast(0.1, 1, 0.1, 0.5, [], null, 12);
-  ok(n.trend === "rising" && n.possibility === "高", "rising+now>0+小QPF：可能性=高", [n.trend, n.possibility]);
+  ok(n.trend === "rising" && n.possibility === "高", "rising+now>0+小QPF：雙證據例外，可能性=高", [n.trend, n.possibility]);
 
   // 正在下：poss=高、tier 只由 1h 實證決定（不被 plan3 抬）
   n = W.buildNowcast(3, 3, 3, null, plan8, ["豪雨"], 12);
@@ -311,13 +314,40 @@ console.log("\n[6e] 鄰站訊號判語（nb 進 gating）");
   n = W.buildNowcast(3, 3, 3, 0, [], null, 12, 6);
   ok(/正在下/.test(n.verdict), "正在下時鄰站不搶話", n.verdict);
   n = W.buildNowcast(0, 0, 0, 5, [], null, 12, 6);
-  ok(n.tier === 3 && /等/.test(n.verdict), "QPF 喊雨時鄰站不搶話", n.verdict);
+  ok(/鄰區在下/.test(n.verdict) && n.tier === 2, "弱 QPF(q=5，gated)時鄰站接手（PATCH-2026-08 優先序）", n.verdict);
   // 鄰站 + h3 並存：鄰站贏（1h 實證 > 長視野），h3_hint 仍附掛
   n = W.buildNowcast(0, 0, 0, 0, [{ from: 15, to: 18, pop: 80, mm_hr: 8 }], null, 12, 6);
   ok(/鄰區在下/.test(n.verdict) && n.claim === "1h" && !!n.h3_hint, "鄰站>h3、h3_hint 保留", [n.verdict, n.claim]);
   // 相容：不傳 nb（7 參數舊呼叫）→ 不觸發、不炸
   n = W.buildNowcast(0, 0, 0, 0, [], null, 12);
   ok(n.tier === 0 && n.possibility === "低", "省略 nb 參數相容", n.tier);
+
+  // 優先序（PATCH-2026-08）：強QPF > 鄰站 > 弱QPF > h3
+  n = W.buildNowcast(0, 0, 0, 3, [], null, 12, 6);
+  ok(/鄰區在下/.test(n.verdict) && n.tier === 2, "鄰站(nb=6) 優先於弱 QPF(q=3)", n.verdict);
+  n = W.buildNowcast(0, 0, 0, 3, [], null, 12, 3);
+  ok(/鄰區有雨/.test(n.verdict) && n.possibility === "中", "nb=3+弱QPF佐證：可能性升中", [n.verdict, n.possibility]);
+  n = W.buildNowcast(0, 0, 0, 15, [], null, 12, 6);
+  ok(/等下會下大雨/.test(n.verdict), "強 QPF(q=15) 優先於鄰站", n.verdict);
+
+  // Type-II 鐵律掃描：任一源有訊號 → 文案至少帶傘級，絕不出現「放心出門」
+  const plan8x = [{ from: 15, to: 18, pop: 80, mm_hr: 8 }];
+  const combos = [
+    ["弱QPF q=0.5", () => W.buildNowcast(0, 0, 0, 0.5, [], null, 12)],
+    ["弱QPF q=3",  () => W.buildNowcast(0, 0, 0, 3, [], null, 12)],
+    ["鄰站 nb=3",  () => W.buildNowcast(0, 0, 0, 0, [], null, 12, 3)],
+    ["鄰站 nb=6",  () => W.buildNowcast(0, 0, 0, 0, [], null, 12, 6)],
+    ["僅 h3",      () => W.buildNowcast(0, 0, 0, null, plan8x, null, 12)],
+    ["僅特報",     () => W.buildNowcast(0, 0, 0, null, [], ["大雨"], 12)],
+    ["q3+nb3",     () => W.buildNowcast(0, 0, 0, 3, [], null, 12, 3)],
+  ];
+  for (const [name, fn] of combos) {
+    const r = fn(), txt = (r.verdict || "") + (r.sub || "");
+    ok(!/放心出門/.test(txt) && /傘|雨/.test(txt), `Type-II 鐵律：${name} 有警示文案`, txt);
+  }
+  // 全源靜默才允許「放心出門」
+  n = W.buildNowcast(0, 0, 0, null, [], null, 12, 0);
+  ok(/放心出門/.test(n.sub), "全源靜默 → 放心出門（唯一允許處）", n.sub);
 }
 
 // ── 7. W27 情境回測：同一批輸入，舊邏輯 vs 新邏輯 ─────────────

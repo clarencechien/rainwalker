@@ -773,7 +773,11 @@ function actionHint(tier, wp) {
 // th≥2 precision .29／th≥5 precision .44，vs base_rate .05；recall .69）。
 // 舊 nearbyHint/omHint 提示層同 patch 移除：鄰站改由判語背書；OM 參考行經 15k 筆源對決
 // 判出局（OM acc .75 vs QPF .86，z=24.6）；寬 QPF 負結果收案（.82 vs .89）。
-const GATE = { Q_HI: 1, PLAN_HEAVY: 8, NB_MID: 2, NB_HIGH: 5 };
+// Q_SHOUT：校準 gating（docs/PATCH-2026-08）——校準表證明 QPF<10mm 為弱證據
+//（點位實際下雨率雨週 2–3 成、乾週 <1 成；唯 10–20/20+ 桶跨 regime 可用），
+// q≥10 或 rising+地面有雨跡（雙證據）才維持喊雨；弱 QPF 降級但文案仍帶傘。
+// Type-II 鐵律（使用者拍板）：任一源有訊號 → 至少帶傘級文案；「放心出門」僅限全源靜默。
+const GATE = { Q_HI: 1, PLAN_HEAVY: 8, NB_MID: 2, NB_HIGH: 5, Q_SHOUT: 10 };
 function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr, nb = null) {
   now = +now || 0;
   const trend = (r10 != null && r1h != null)
@@ -810,25 +814,31 @@ function buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr, nb = null) {
       tier = tierOf(now); poss = "高";
       verdict = `正在下${W(tier)}`; sub = `${wp ? "留意" + wp + "特報 · " : ""}${actionHint(tier, wp)}`;
     }
-  } else if (q != null && q > 0) {
-    // 可能性 gating：「高」必須 QPF≥門檻，或趨勢 rising 且地面已有雨跡
+  } else if (q != null && q > 0 && (q >= GATE.Q_SHOUT || (trend === "rising" && now > 0))) {
+    // 強證據喊雨：QPF≥10（校準表跨 regime 可信桶）或雷達+地面雙證據（rising 例外不 gate）
     tier = tierOf(q);
     poss = (q >= GATE.Q_HI || (trend === "rising" && now > 0)) ? "高" : "中";
     verdict = tier >= 5 ? "馬上有豪雨" : tier >= 4 ? `等下會下${W(tier)}` : `等一下會下${W(tier)}`;
     sub = `雷達估計約 1 小時內報到 · ${actionHint(tier, wp)}`;
   } else if (nb != null && nb >= GATE.NB_MID) {
-    // 鄰站領先訊號（移入型降雨）：由判語背書，claim=1h 進帳受考。
-    // 可能性依 18,352 筆全期回測校準（增量筆實際下雨率：nb≥5→0.255、nb2–5→0.084；
-    // patch 原估 .44 為邊際關聯高估，回測修訂）：nb≥5→中、nb2–5→低，維持 高≈.46 桶純度。
+    // 鄰站領先訊號（移入型降雨；優先於弱 QPF——增量下雨率 .255 高於弱 QPF 各桶）：
+    // claim=1h 進帳受考；可能性依 18,352 筆增量回測校準（nb≥5→中、nb2–5→低；有弱 QPF 佐證升中）。
     if (nb >= GATE.NB_HIGH) {
       tier = 2; poss = "中";
       verdict = "鄰區在下，可能移入";
       sub = `10 公里內鄰站約 ${Math.round(nb)} mm/h，雨可能很快到 · 帶傘出門`;
     } else {
-      tier = 1; poss = "低";
+      tier = 1; poss = (q != null && q >= GATE.Q_HI) ? "中" : "低";
       verdict = "鄰區有雨，留意移入";
       sub = "附近測站在下雨，出門帶把傘保險";
     }
+  } else if (q != null && q > 0) {
+    // 校準 gating（docs/PATCH-2026-08，案 A+C 文案）：弱 QPF（<10mm）帳面降級不喊雨，
+    // 但文案維持帶傘警告——Type-I 修辭可容忍，Type-II（有訊號卻無警示）不可發生。
+    tier = Math.min(tierOf(q), 1);
+    poss = q >= GATE.Q_HI ? "中" : "低";
+    verdict = "可能有短暫雨";
+    sub = "雷達有零星訊號（這類訊號多半下不成），出門帶把傘保險";
   } else if (h3_tier != null) {
     // 1h 內無實證、只有縣市級長視野訊號：主判語誠實說「這 1 小時不會下」，稍後資訊放 h3_hint
     tier = 0; claim = "3h";
