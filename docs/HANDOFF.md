@@ -17,7 +17,7 @@
   已升級；CPU 瘦身仍保留：來源共用一次 parse、QPF 定向掃描、預報 R2 快取 25 分）。
 - `CWA_KEY` 為 Worker Secret（**必 .trim()**，尾端換行=401）。
 - 檔案：`src/index.js`（全邏輯）、`src/points.json`（config）、`public/index.html`（單檔 UI）、
-  `public/sw.js`（cache 版本現為 **rain-v18**，改前端必 bump）、`tests/offline.test.mjs`（98 案例）。
+  `public/sw.js`（cache 版本現為 **rain-v18**，改前端必 bump）、`tests/offline.test.mjs`（110 案例）。
 
 ## 2. 資料源（全 CWA 免費；外部源僅幕後）
 | 源 | 用途 | 狀態 |
@@ -31,14 +31,18 @@
 | 已否決 | Google Weather（不綁卡）、Apple（無帳號）、ECMWF（25km/3h 太鈍）、寬 QPF（z=16.2 淨損）、雷達回波外推（拚預測力，不打） | — |
 
 ## 3. Fusion 現狀（`buildNowcast(now, r10, r1h, qpf, plan, warn, nowHr, nb)`）
-優先序：**正在下 → QPF 喊雨 → 鄰站訊號 → h3（僅長視野）→ 全無**。
+優先序：**正在下 → 強QPF（q≥10 或 rising+地面雨跡）→ 鄰站訊號 → 弱QPF（gated）→ h3 → 全無**。
 - 雙 horizon：主判語只由 1h 實證出；縣市 plan3+特報降為 `h3_hint` 副提示（claim="3h"，記兩本帳）。
 - 可能性 gating：「高」須 QPF≥1 或正在下或 rising+地面有雨跡；特報/plan3 單獨最多「中」。
 - **鄰站分支（2026-07-22 進 fusion，PATCH-2026-07）**：乾站且 QPF 無訊號時，
   nb≥5 → tier2「鄰區在下，可能移入」可能性**中**；nb 2–5 → tier1「鄰區有雨，留意移入」可能性**低**；
   claim=1h 進帳受考。可能性對映依 18,352 筆增量回測校準（增量下雨率 .255/.084；
   **邊際關聯≠增量預測力**——教訓已入 SPEC §8）。
-- 門檻集中在 `GATE = { Q_HI:1, PLAN_HEAVY:8, NB_MID:2, NB_HIGH:5 }`（人工調參區，絕不自動改）。
+- **QPF 校準 gating（2026-08-03，docs/PATCH-2026-08）**：q<10 弱證據降級 tier1「可能有短暫雨」
+  （可能性 q≥1→中/q<1→低）；q≥10 或 rising+地面雨跡（雙證據）維持喊雨。OOS 回測：誤報 0.787→0.544、
+  雨日漏報 63→82 筆（全數仍有帶傘文案）。
+- **Type-II 文案鐵律**：任一源有訊號 → 至少帶傘級文案；「放心出門」僅限全源靜默（測試有鐵律掃描釘住）。
+- 門檻集中在 `GATE = { Q_HI:1, PLAN_HEAVY:8, NB_MID:2, NB_HIGH:5, Q_SHOUT:10 }`（人工調參區，絕不自動改）。
 - 可能性階梯實測：高 ≈0.46 ＞ 中 ≈0.2+ ＞ 低 ≈0.0x（單調、誠實）。
 
 ## 4. Shadow log 與準度（規格見 `docs/SHADOWLOG_SPEC.md`，改 shadow 先改 spec）
@@ -85,9 +89,10 @@
    （格點對位/檔案時效），這是 CWA 劣化警報，不是換源訊號。
 5. **校準表前端**：`/shadow/latest` 的 calibration 桶 n≥50 時精簡卡可能性旁應自動加註——驗一次。
 6. **housekeeping 驗證**（上線滿 35 天後，約 08-10）：`/shadow/peek?day=<35 天前>` 應 lines:0。
-7. **待拍板：校準表 gating QPF 喊雨**——W32 對答案後定案的下一針，決策書
-   `docs/PATCH-2026-08-calibration-gate.md`（含 28 天樣本外回測：乾週誤報 93% 為 QPF 驅動、
-   校準表 regime 漂移發現、三案比較，建議案 A `Q_SHOUT=10`）。**等使用者選案後才動工。**
+7. ~~待拍板：校準 gating~~ → **已於 08-03 拍板實施**（案 A＋C 文案＋Type-II 鐵律，
+   詳 `docs/PATCH-2026-08-calibration-gate.md` §9）。**驗收**：部署後乾天打 `/at`（qpf 2–5 的點）
+   應見「可能有短暫雨/中」而非「等一下會下小雨/高」；下份週報 `false_alarm` 乾週目標 ≤0.85、
+   全期 ≤0.6，`miss` ≤0.02，「高」桶實際下雨率回升。
 8. **Backlog（未拍板，勿自行啟動）**：原始雷達回波當影子欄位（1km 解析度，唯一可能補
    「站間小雨胞」的免費資料；要做也是影子先行＋增量回測）；準度面板加源對決/校準摘要；
    看門狗規則修訂（乾週沉默者 accuracy 虛高——比 accuracy 之外要比喊雨頻率+誤報率，
