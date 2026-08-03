@@ -85,8 +85,13 @@
    （格點對位/檔案時效），這是 CWA 劣化警報，不是換源訊號。
 5. **校準表前端**：`/shadow/latest` 的 calibration 桶 n≥50 時精簡卡可能性旁應自動加註——驗一次。
 6. **housekeeping 驗證**（上線滿 35 天後，約 08-10）：`/shadow/peek?day=<35 天前>` 應 lines:0。
-7. **Backlog（未拍板，勿自行啟動）**：原始雷達回波當影子欄位（1km 解析度，唯一可能補
-   「站間小雨胞」的免費資料；要做也是影子先行＋增量回測）；準度面板加源對決/校準摘要。
+7. **待拍板：校準表 gating QPF 喊雨**——W32 對答案後定案的下一針，決策書
+   `docs/PATCH-2026-08-calibration-gate.md`（含 28 天樣本外回測：乾週誤報 93% 為 QPF 驅動、
+   校準表 regime 漂移發現、三案比較，建議案 A `Q_SHOUT=10`）。**等使用者選案後才動工。**
+8. **Backlog（未拍板，勿自行啟動）**：原始雷達回波當影子欄位（1km 解析度，唯一可能補
+   「站間小雨胞」的免費資料；要做也是影子先行＋增量回測）；準度面板加源對決/校準摘要；
+   看門狗規則修訂（乾週沉默者 accuracy 虛高——比 accuracy 之外要比喊雨頻率+誤報率，
+   W31 QPF 0.80 vs JMA 0.95 實為 regime 效應非 CWA 劣化）。
 
 ## 9. Git / 部署
 - 開發 branch：`claude/rainwalker-phases-impl-hquc7d`（PR #10 流程，使用者自行 merge + web UI 部署）。
